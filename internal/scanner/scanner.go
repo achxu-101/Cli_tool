@@ -138,7 +138,17 @@ func ScanBinaries(cfg *config.Config) []Component {
 				continue
 			}
 
-			fullPath := filepath.Join(dir, entry.Name())
+			name := entry.Name()
+
+			// Check lookup table and user config before probing — skips
+			// hundreds of unrelated binaries on systems like Kali.
+			_, inConfig := cfg.GetBinary(name)
+			_, inLookup := lookup.LookupBinary(name)
+			if !inConfig && !inLookup {
+				continue
+			}
+
+			fullPath := filepath.Join(dir, name)
 
 			// Resolve symlinks so we don't probe the same binary twice.
 			realPath, err := filepath.EvalSymlinks(fullPath)
@@ -156,27 +166,14 @@ func ScanBinaries(cfg *config.Config) []Component {
 			}
 
 			version := probeVersion(fullPath)
-
-			// If version cannot be detected, still include the binary if it is
-			// in the lookup table or user config so the user can upgrade it.
 			if version == "" {
-				name := entry.Name()
-				isKnown := false
-				if _, ok := cfg.GetBinary(name); ok {
-					isKnown = true
-				} else if _, ok := lookup.LookupBinary(name); ok {
-					isKnown = true
-				}
-				if !isKnown {
-					continue
-				}
 				version = "version unknown"
 			}
 
 			seen[realPath] = struct{}{}
 
 			c := Component{
-				Name:        entry.Name(),
+				Name:        name,
 				Group:       "Binaries",
 				Current:     version,
 				IsInstalled: true,
