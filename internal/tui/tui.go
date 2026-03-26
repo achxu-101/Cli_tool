@@ -38,6 +38,12 @@ type scanDoneMsg struct {
 	err     error
 }
 
+// scanProgressMsg carries a status string from the scan goroutine.
+type scanProgressMsg string
+
+// scanProgressDoneMsg signals the progress channel is closed.
+type scanProgressDoneMsg struct{}
+
 // selfUpdateMsg carries an optional update notice.
 type selfUpdateMsg struct{ notice string }
 
@@ -73,10 +79,12 @@ type Model struct {
 	offline bool
 
 	// scan results
-	results      []resolver.Result
-	scanErr      error
-	groupSummary []groupRow
-	updateNotice string // non-empty if a newer version is available
+	results        []resolver.Result
+	scanErr        error
+	groupSummary   []groupRow
+	updateNotice   string // non-empty if a newer version is available
+	scanStatus     string // current scan step shown while scanning
+	scanProgressCh chan string
 
 	// group selection (screen 2)
 	selectedGroups []string
@@ -133,35 +141,54 @@ func New(cfg *config.Config, dryRun, offline bool) Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	return Model{
-		cfg:        cfg,
-		screen:     screenScan,
-		spinner:    sp,
-		dryRun:     dryRun,
-		offline:    offline,
-		editingIdx: -1,
+		cfg:            cfg,
+		screen:         screenScan,
+		spinner:        sp,
+		dryRun:         dryRun,
+		offline:        offline,
+		editingIdx:     -1,
+		scanProgressCh: make(chan string, 8),
 	}
 }
 
 // Init starts the spinner, fires the background scan, and checks for updates.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.runScan(), m.checkSelfUpdate())
+	return tea.Batch(m.spinner.Tick, m.runScan(), m.checkSelfUpdate(), m.readScanProgress())
 }
 
 // runScan performs the scan (and resolve, unless offline) off the UI goroutine.
 func (m Model) runScan() tea.Cmd {
 	offline := m.offline
 	cfg := m.cfg
+	ch := m.scanProgressCh
 	return func() tea.Msg {
-		components := scanner.ScanAll(cfg)
+		components := scanner.ScanAllWithProgress(cfg, func(status string) {
+			ch <- status
+		})
+		var results []resolver.Result
 		if offline {
-			// In offline mode wrap components as Results with empty Latest.
-			results := make([]resolver.Result, len(components))
+			results = make([]resolver.Result, len(components))
 			for i, c := range components {
 				results[i] = resolver.Result{Component: c}
 			}
-			return scanDoneMsg{results: results}
+		} else {
+			ch <- "Resolving latest versions..."
+			results = resolver.ResolveAll(components)
 		}
-		return scanDoneMsg{results: resolver.ResolveAll(components)}
+		close(ch)
+		return scanDoneMsg{results: results}
+	}
+}
+
+// readScanProgress waits for the next progress message from the scan goroutine.
+func (m Model) readScanProgress() tea.Cmd {
+	ch := m.scanProgressCh
+	return func() tea.Msg {
+		status, ok := <-ch
+		if !ok {
+			return scanProgressDoneMsg{}
+		}
+		return scanProgressMsg(status)
 	}
 }
 
@@ -209,6 +236,13 @@ func (m Model) updateScan(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.transitionToGroupSelect()
 			}
 		}
+
+	case scanProgressMsg:
+		m.scanStatus = string(msg)
+		return m, m.readScanProgress()
+
+	case scanProgressDoneMsg:
+		return m, nil
 
 	case scanDoneMsg:
 		m.scanErr = msg.err
@@ -387,7 +421,11 @@ func (m Model) View() string {
 
 func (m Model) viewScan() string {
 	if m.results == nil {
-		return "\n  " + m.spinner.View() + "  Scanning your environment...\n"
+		status := m.scanStatus
+		if status == "" {
+			status = "Scanning your environment..."
+		}
+		return "\n  " + m.spinner.View() + "  " + status + "\n"
 	}
 
 	if m.scanErr != nil {

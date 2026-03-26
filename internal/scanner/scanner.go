@@ -388,6 +388,21 @@ func safeRun(name string, fn func() []Component) (result []Component) {
 	return fn()
 }
 
+// ScanAllWithProgress is like ScanAll but calls progress before each step
+// so callers can display the current scan stage to the user.
+func ScanAllWithProgress(cfg *config.Config, progress func(string)) []Component {
+	var all []Component
+	progress("Scanning apt packages...")
+	all = append(all, safeRun("ScanApt", func() []Component { return ScanApt() })...)
+	progress("Scanning binaries...")
+	all = append(all, safeRun("ScanBinaries", func() []Component { return ScanBinaries(cfg) })...)
+	progress("Scanning services...")
+	all = append(all, safeRun("ScanServices", func() []Component { return ScanServices(cfg) })...)
+	progress("Scanning Helm charts...")
+	all = append(all, safeRun("ScanHelmCharts", func() []Component { return ScanHelmCharts() })...)
+	return deduplicate(all)
+}
+
 // ScanAll runs all scanners and returns a deduplicated component list.
 // Each scanner is protected by a recover so a single failure never crashes the scan.
 // When a name appears in both Binaries and Services, the Services entry wins.
