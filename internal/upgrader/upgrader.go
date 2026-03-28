@@ -6,12 +6,36 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	"upgrador/internal/scanner"
 )
+
+// DetectKubeconfig finds a usable kubeconfig path, trying common locations.
+// Returns "" if none is found.
+func DetectKubeconfig() string {
+	// 1. Explicit KUBECONFIG env var.
+	if k := os.Getenv("KUBECONFIG"); k != "" {
+		if _, err := os.Stat(k); err == nil {
+			return k
+		}
+	}
+	// 2. The invoking user's kubeconfig (upgrador runs as root via sudo).
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		p := fmt.Sprintf("/home/%s/.kube/config", sudoUser)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// 3. Root's kubeconfig.
+	if _, err := os.Stat("/root/.kube/config"); err == nil {
+		return "/root/.kube/config"
+	}
+	return ""
+}
 
 const (
 	userAgent  = "upgrador/1.0"
@@ -230,10 +254,23 @@ func upgradeApt(packages []string, w io.Writer, dryRun bool) error {
 }
 
 func upgradeHelmChart(c scanner.Component, version string, w io.Writer, dryRun bool) error {
-	const kubeconfig = "KUBECONFIG=/home/ubuntu/.kube/config"
+	// Prefer kubeconfig set by TUI prompt; fall back to auto-detection.
+	kubeconfigPath := c.KubeconfigPath
+	if kubeconfigPath == "" {
+		kubeconfigPath = DetectKubeconfig()
+	}
+	if kubeconfigPath == "" {
+		return fmt.Errorf("kubeconfig not found — set KUBECONFIG or re-run and provide the path when prompted")
+	}
+	kubeEnv := "KUBECONFIG=" + kubeconfigPath
+
+	namespace := c.Namespace
+	if namespace == "" {
+		namespace = "default"
+	}
 
 	step(w, "Updating Helm repos...")
-	if err := streamShell(kubeconfig+" helm repo update", w, dryRun); err != nil {
+	if err := streamShell(kubeEnv+" helm repo update", w, dryRun); err != nil {
 		return err
 	}
 
@@ -241,11 +278,10 @@ func upgradeHelmChart(c scanner.Component, version string, w io.Writer, dryRun b
 	chart := c.AptPackage
 	repoName := c.GithubRepo
 
-	step(w, fmt.Sprintf("Upgrading %s to %s...", c.Name, version))
+	step(w, fmt.Sprintf("Upgrading %s to %s in namespace %s...", c.Name, version, namespace))
 	return streamShell(fmt.Sprintf(
-		`%s helm upgrade %s %s/%s `+
-			`--namespace %s --version %s --reuse-values --wait --timeout 10m`,
-		kubeconfig, c.Name, repoName, chart, c.GithubRepo, version,
+		`%s helm upgrade %s %s/%s --namespace %s --version %s --reuse-values --wait --timeout 10m`,
+		kubeEnv, c.Name, repoName, chart, namespace, version,
 	), w, dryRun)
 }
 

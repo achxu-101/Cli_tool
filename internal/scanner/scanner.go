@@ -32,6 +32,8 @@ type Component struct {
 	IsKnown          bool     // true if in lookup table or user config
 	IsUnknown        bool     // true if not in lookup or config — needs user input
 	SelectedPackages []string // for apt: specific packages to upgrade (nil = all)
+	Namespace        string   // for Helm: the release namespace
+	KubeconfigPath   string   // for Helm: kubeconfig path (set by TUI before upgrade)
 }
 
 // AptPackage represents a single upgradable apt package with version and size info.
@@ -437,8 +439,9 @@ func ScanHelmCharts() []Component {
 			IsKnown:     !isUnknown,
 			IsUnknown:   isUnknown,
 			Method:      "helm_upgrade",
-			GithubRepo:  repoName,  // repo name for helm search / upgrade
-			AptPackage:  chartName, // chart name for helm upgrade
+			GithubRepo:  repoName,   // repo name for helm search / upgrade
+			AptPackage:  chartName,  // chart name for helm upgrade
+			Namespace:   r.Namespace,
 		})
 	}
 	return results

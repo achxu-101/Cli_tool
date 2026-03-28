@@ -123,6 +123,11 @@ type Model struct {
 	aptOffset   int
 	aptLoading  bool
 
+	// kubeconfig prompt (shown on confirm screen when helm upgrades are queued)
+	kubeconfigPath  string
+	kubeconfigInput string
+	kubeconfigForm  *huh.Form
+
 	// upgrade execution (screen 5)
 	upgradeIdx     int
 	upgradeReader  *io.PipeReader
@@ -945,6 +950,23 @@ func (m Model) viewAptPackages() string {
 var groupOrder = []string{"OS", "Binaries", "Services", "Helm Charts"}
 
 func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Kubeconfig prompt overlay.
+	if m.kubeconfigForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		form, cmd := m.kubeconfigForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.kubeconfigForm = f
+		}
+		if m.kubeconfigForm.State == huh.StateCompleted {
+			m.kubeconfigPath = strings.TrimSpace(m.kubeconfigInput)
+			m.kubeconfigForm = nil
+			return m.startUpgrades()
+		}
+		return m, cmd
+	}
+
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.String() {
 		case "q", "ctrl+c":
@@ -959,6 +981,10 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) viewConfirm() string {
+	if m.kubeconfigForm != nil {
+		return m.kubeconfigForm.View()
+	}
+
 	var b strings.Builder
 
 	title := "UPGRADE PLAN"
@@ -1005,6 +1031,37 @@ func (m Model) viewConfirm() string {
 // ── Screen 5: Upgrade execution ───────────────────────────────────────────────
 
 func (m Model) startUpgrades() (tea.Model, tea.Cmd) {
+	// If any Helm charts are queued, ensure we have a kubeconfig.
+	hasHelm := false
+	for _, r := range m.confirmedResults {
+		if r.Component.Group == "Helm Charts" {
+			hasHelm = true
+			break
+		}
+	}
+	if hasHelm && m.kubeconfigPath == "" {
+		if detected := upgrader.DetectKubeconfig(); detected != "" {
+			m.kubeconfigPath = detected
+		} else {
+			// Auto-detection failed — prompt the user.
+			m.kubeconfigInput = ""
+			m.kubeconfigForm = huh.NewForm(huh.NewGroup(
+				huh.NewInput().
+					Title("Kubeconfig path not found automatically. Please enter it:").
+					Placeholder("/home/youruser/.kube/config").
+					Value(&m.kubeconfigInput),
+			))
+			return m, m.kubeconfigForm.Init()
+		}
+	}
+
+	// Stamp kubeconfig path onto every Helm component.
+	for i := range m.confirmedResults {
+		if m.confirmedResults[i].Component.Group == "Helm Charts" {
+			m.confirmedResults[i].Component.KubeconfigPath = m.kubeconfigPath
+		}
+	}
+
 	m.screen = screenUpgrade
 	m.upgradeIdx = 0
 	m.upgradeResults = nil
