@@ -20,17 +20,95 @@ import (
 
 // Component represents a discovered, potentially upgradeable component.
 type Component struct {
+	Name             string
+	Group            string // "OS", "Binaries", "Services", "Helm Charts"
+	Current          string // detected version string
+	IsInstalled      bool
+	BinaryPath       string   // full path if binary
+	Method           string   // upgrade method from lookup or config
+	GithubRepo       string   // if method is github_*; for Helm Charts: namespace
+	AptPackage       string   // for Helm Charts: chart name (e.g. "argo-cd")
+	ScriptURL        string
+	IsKnown          bool     // true if in lookup table or user config
+	IsUnknown        bool     // true if not in lookup or config — needs user input
+	SelectedPackages []string // for apt: specific packages to upgrade (nil = all)
+}
+
+// AptPackage represents a single upgradable apt package with version and size info.
+type AptPackage struct {
 	Name        string
-	Group       string // "OS", "Binaries", "Services", "Helm Charts"
-	Current     string // detected version string
-	IsInstalled bool
-	BinaryPath  string // full path if binary
-	Method      string // upgrade method from lookup or config
-	GithubRepo  string // if method is github_*; for Helm Charts: namespace
-	AptPackage  string // for Helm Charts: chart name (e.g. "argo-cd")
-	ScriptURL   string
-	IsKnown     bool // true if in lookup table or user config
-	IsUnknown   bool // true if not in lookup or config — needs user input
+	CurrentVer  string
+	NewVer      string
+	InstalledKB int64 // installed size in KB from apt-cache show
+}
+
+// ScanAptPackages returns the full list of individually upgradable apt packages
+// with their current/new versions and installed sizes.
+func ScanAptPackages() ([]AptPackage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "apt", "list", "--upgradable").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("apt list: %w", err)
+	}
+
+	var names []string
+	pkgMap := make(map[string]*AptPackage)
+
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "Listing") || line == "" {
+			continue
+		}
+		// Format: "name/suite newver arch [upgradable from: oldver]"
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		name := strings.SplitN(parts[0], "/", 2)[0]
+		newVer := parts[1]
+		oldVer := ""
+		for i, p := range parts {
+			if p == "from:" && i+1 < len(parts) {
+				oldVer = strings.TrimSuffix(parts[i+1], "]")
+				break
+			}
+		}
+		names = append(names, name)
+		pkgMap[name] = &AptPackage{Name: name, CurrentVer: oldVer, NewVer: newVer}
+	}
+
+	// Fetch installed sizes for all packages in one apt-cache show call.
+	if len(names) > 0 {
+		args := append([]string{"show", "--no-all-versions"}, names...)
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+		sizeOut, err := exec.CommandContext(ctx2, "apt-cache", args...).Output()
+		cancel2()
+		if err == nil {
+			currentPkg := ""
+			sc2 := bufio.NewScanner(bytes.NewReader(sizeOut))
+			for sc2.Scan() {
+				l := sc2.Text()
+				if strings.HasPrefix(l, "Package: ") {
+					currentPkg = strings.TrimPrefix(l, "Package: ")
+				} else if strings.HasPrefix(l, "Installed-Size: ") && currentPkg != "" {
+					var kb int64
+					fmt.Sscanf(strings.TrimPrefix(l, "Installed-Size: "), "%d", &kb)
+					if p, ok := pkgMap[currentPkg]; ok {
+						p.InstalledKB = kb
+					}
+				}
+			}
+		}
+	}
+
+	result := make([]AptPackage, 0, len(names))
+	for _, name := range names {
+		result = append(result, *pkgMap[name])
+	}
+	return result, nil
 }
 
 var versionRe = regexp.MustCompile(`v?\d+\.\d+[\.\d]*`)

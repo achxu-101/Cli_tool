@@ -107,7 +107,7 @@ func RunUpgrade(c scanner.Component, version string, w io.Writer, dryRun bool) e
 	case "helm_script":
 		return upgradeHelm(w, dryRun)
 	case "apt":
-		return upgradeApt(w, dryRun)
+		return upgradeApt(c.SelectedPackages, w, dryRun)
 	case "custom_script":
 		return upgradeCustomScript(c, w, dryRun)
 	default:
@@ -208,10 +208,17 @@ func upgradeHelm(w io.Writer, dryRun bool) error {
 	)
 }
 
-func upgradeApt(w io.Writer, dryRun bool) error {
+func upgradeApt(packages []string, w io.Writer, dryRun bool) error {
 	step(w, "Updating apt cache...")
 	if err := streamShell("apt-get update -q", w, dryRun); err != nil {
 		return err
+	}
+	if len(packages) > 0 {
+		step(w, fmt.Sprintf("Upgrading %d selected packages...", len(packages)))
+		return streamShell(fmt.Sprintf(
+			`DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y %s`,
+			strings.Join(packages, " "),
+		), w, dryRun)
 	}
 	step(w, "Running dist-upgrade...")
 	return streamShell(

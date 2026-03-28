@@ -27,6 +27,7 @@ const (
 	screenScan screen = iota
 	screenGroupSelect
 	screenComponentSelect
+	screenAptPackages
 	screenConfirm
 	screenUpgrade
 	screenSummary
@@ -43,6 +44,12 @@ type scanProgressMsg string
 
 // scanProgressDoneMsg signals the progress channel is closed.
 type scanProgressDoneMsg struct{}
+
+// aptPackagesLoadedMsg carries the result of loading individual apt packages.
+type aptPackagesLoadedMsg struct {
+	packages []scanner.AptPackage
+	err      error
+}
 
 // selfUpdateMsg carries an optional update notice.
 type selfUpdateMsg struct{ notice string }
@@ -108,6 +115,13 @@ type Model struct {
 	offlineQueueIdx   int
 	offlineForm       *huh.Form
 	offlineVersionInput string
+
+	// apt package drill-down (screen 3.5)
+	aptPackages []scanner.AptPackage
+	aptSelected []bool
+	aptCursor   int
+	aptOffset   int
+	aptLoading  bool
 
 	// upgrade execution (screen 5)
 	upgradeIdx     int
@@ -207,6 +221,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateNotice = u.notice
 		return m, nil
 	}
+	// Handle apt package load result at any screen.
+	if a, ok := msg.(aptPackagesLoadedMsg); ok {
+		m.aptLoading = false
+		m.aptPackages = a.packages
+		m.aptSelected = make([]bool, len(a.packages))
+		for i := range m.aptSelected {
+			m.aptSelected[i] = true // pre-select all
+		}
+		return m, nil
+	}
 
 	switch m.screen {
 	case screenScan:
@@ -215,6 +239,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateGroupSelect(msg)
 	case screenComponentSelect:
 		return m.updateComponentSelect(msg)
+	case screenAptPackages:
+		return m.updateAptPackages(msg)
 	case screenConfirm:
 		return m.updateConfirm(msg)
 	case screenUpgrade:
@@ -328,6 +354,17 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.compCursor < len(m.compSelected) {
 				m.compSelected[m.compCursor] = !m.compSelected[m.compCursor]
 			}
+		case "l":
+			if len(items) > 0 && items[m.compCursor].Component.Method == "apt" {
+				m.screen = screenAptPackages
+				m.aptCursor = 0
+				m.aptOffset = 0
+				if len(m.aptPackages) == 0 {
+					m.aptLoading = true
+					return m, loadAptPackages()
+				}
+				return m, nil
+			}
 		case "e":
 			if len(items) > 0 {
 				var cmd tea.Cmd
@@ -406,6 +443,8 @@ func (m Model) View() string {
 		return m.viewGroupSelect()
 	case screenComponentSelect:
 		return m.viewComponentSelect()
+	case screenAptPackages:
+		return m.viewAptPackages()
 	case screenConfirm:
 		return m.viewConfirm()
 	case screenUpgrade:
@@ -676,6 +715,10 @@ func (m Model) viewComponentSelect() string {
 	b.WriteString(styleDim.Render("Select components to upgrade:"))
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render(hint))
+	if len(items) > 0 && items[m.compCursor].Component.Method == "apt" {
+		b.WriteString("\n")
+		b.WriteString(styleCyan.Render("  l → view and select individual packages"))
+	}
 	b.WriteString("\n\n")
 
 	for i, r := range items {
@@ -755,6 +798,146 @@ func methodLabel(method string, isUnknown bool) string {
 	default:
 		return method
 	}
+}
+
+// ── Screen 3.5: Apt package drill-down ───────────────────────────────────────
+
+const aptPageSize = 22
+
+// loadAptPackages fetches the individual apt package list off the UI goroutine.
+func loadAptPackages() tea.Cmd {
+	return func() tea.Msg {
+		pkgs, err := scanner.ScanAptPackages()
+		return aptPackagesLoadedMsg{packages: pkgs, err: err}
+	}
+}
+
+func (m Model) updateAptPackages(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "b", "esc":
+			m.screen = screenComponentSelect
+			return m, nil
+		case "up", "k":
+			if m.aptCursor > 0 {
+				m.aptCursor--
+				if m.aptCursor < m.aptOffset {
+					m.aptOffset--
+				}
+			}
+		case "down", "j":
+			if m.aptCursor < len(m.aptPackages)-1 {
+				m.aptCursor++
+				if m.aptCursor >= m.aptOffset+aptPageSize {
+					m.aptOffset++
+				}
+			}
+		case " ":
+			if m.aptCursor < len(m.aptSelected) {
+				m.aptSelected[m.aptCursor] = !m.aptSelected[m.aptCursor]
+			}
+		case "a":
+			// Toggle all.
+			allOn := true
+			for _, s := range m.aptSelected {
+				if !s {
+					allOn = false
+					break
+				}
+			}
+			for i := range m.aptSelected {
+				m.aptSelected[i] = !allOn
+			}
+		case "enter":
+			// Store selected package names back on the apt component.
+			var selected []string
+			for i, pkg := range m.aptPackages {
+				if m.aptSelected[i] {
+					selected = append(selected, pkg.Name)
+				}
+			}
+			for i, r := range m.results {
+				if r.Component.Method == "apt" {
+					m.results[i].Component.SelectedPackages = selected
+					break
+				}
+			}
+			m.screen = screenComponentSelect
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func formatAptSize(kb int64) string {
+	if kb <= 0 {
+		return ""
+	}
+	if kb < 1024 {
+		return fmt.Sprintf("%d KB", kb)
+	}
+	return fmt.Sprintf("%.1f MB", float64(kb)/1024)
+}
+
+func (m Model) viewAptPackages() string {
+	if m.aptLoading {
+		return "\n  Loading package list...\n"
+	}
+
+	total := len(m.aptPackages)
+	selectedCount := 0
+	for _, s := range m.aptSelected {
+		if s {
+			selectedCount++
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(styleTitle.Render(fmt.Sprintf("APT Packages — %d of %d selected", selectedCount, total)))
+	b.WriteString("\n")
+	b.WriteString(styleDim.Render("j/k navigate  SPACE toggle  a toggle-all  ENTER confirm  b back"))
+	b.WriteString("\n\n")
+
+	end := m.aptOffset + aptPageSize
+	if end > total {
+		end = total
+	}
+
+	for i := m.aptOffset; i < end; i++ {
+		pkg := m.aptPackages[i]
+
+		prefix := "  "
+		if i == m.aptCursor {
+			prefix = "> "
+		}
+
+		var check string
+		if m.aptSelected[i] {
+			check = styleGreen.Render("[✓]")
+		} else {
+			check = styleRed.Render("[ ]")
+		}
+
+		namePad := fmt.Sprintf("%-28s", pkg.Name)
+		if i == m.aptCursor {
+			namePad = lipgloss.NewStyle().Bold(true).Underline(true).Render(namePad)
+		} else {
+			namePad = styleGroupName.Render(namePad)
+		}
+
+		versions := styleGrey.Render(pkg.CurrentVer) + styleGrey.Render(" → ") + styleCyan.Render(pkg.NewVer)
+		size := styleDim.Render(fmt.Sprintf("  %s", formatAptSize(pkg.InstalledKB)))
+
+		fmt.Fprintf(&b, "%s%s %s  %s%s\n", prefix, check, namePad, versions, size)
+	}
+
+	if total > aptPageSize {
+		b.WriteString(styleDim.Render(fmt.Sprintf("\n  %d–%d of %d packages", m.aptOffset+1, end, total)))
+	}
+
+	return styleBorder.Render(b.String())
 }
 
 // ── Screen 4: Confirmation ────────────────────────────────────────────────────
