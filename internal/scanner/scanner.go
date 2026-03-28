@@ -345,6 +345,35 @@ func ScanServices(cfg *config.Config) []Component {
 	return results
 }
 
+// findKubeconfig returns a kubeconfig path for helm commands, checking the
+// same locations as the upgrader: KUBECONFIG env, SUDO_USER's home, then /root.
+func findKubeconfig() string {
+	if k := os.Getenv("KUBECONFIG"); k != "" {
+		if _, err := os.Stat(k); err == nil {
+			return k
+		}
+	}
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		p := fmt.Sprintf("/home/%s/.kube/config", sudoUser)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if _, err := os.Stat("/root/.kube/config"); err == nil {
+		return "/root/.kube/config"
+	}
+	return ""
+}
+
+// helmCmd creates a helm exec.Cmd with KUBECONFIG injected when auto-detected.
+func helmCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "helm", args...)
+	if kube := findKubeconfig(); kube != "" {
+		cmd.Env = append(os.Environ(), "KUBECONFIG="+kube)
+	}
+	return cmd
+}
+
 // helmRepoMap builds a map from chart-name prefix → repo name by running
 // `helm repo list` and `helm search repo` cross-referencing. Returns an empty
 // map if helm is unavailable.
@@ -352,7 +381,7 @@ func helmRepoMap() map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "helm", "repo", "list", "-o", "json").Output()
+	out, err := helmCmd(ctx, "repo", "list", "-o", "json").Output()
 	if err != nil {
 		return nil
 	}
@@ -369,8 +398,7 @@ func helmRepoMap() map[string]string {
 	m := make(map[string]string)
 	for _, repo := range repos {
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-		searchOut, err := exec.CommandContext(ctx2, "helm", "search", "repo",
-			repo.Name+"/", "-o", "json").Output()
+		searchOut, err := helmCmd(ctx2, "search", "repo", repo.Name+"/", "-o", "json").Output()
 		cancel2()
 		if err != nil {
 			continue
@@ -397,7 +425,7 @@ func ScanHelmCharts() []Component {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "helm", "list", "--all-namespaces", "-o", "json").Output()
+	out, err := helmCmd(ctx, "list", "--all-namespaces", "-o", "json").Output()
 	if err != nil {
 		return nil
 	}
