@@ -360,7 +360,7 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.compSelected[m.compCursor] = !m.compSelected[m.compCursor]
 			}
 		case "l":
-			if len(items) > 0 && items[m.compCursor].Component.Method == "apt" {
+			if len(items) > 0 && items[m.compCursor].Component.Name == "apt packages" {
 				m.screen = screenAptPackages
 				m.aptCursor = 0
 				m.aptOffset = 0
@@ -720,7 +720,7 @@ func (m Model) viewComponentSelect() string {
 	b.WriteString(styleDim.Render("Select components to upgrade:"))
 	b.WriteString("\n")
 	b.WriteString(styleDim.Render(hint))
-	if len(items) > 0 && items[m.compCursor].Component.Method == "apt" {
+	if len(items) > 0 && items[m.compCursor].Component.Name == "apt packages" {
 		b.WriteString("\n")
 		b.WriteString(styleCyan.Render("  l → view and select individual packages"))
 	}
