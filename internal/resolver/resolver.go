@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -12,6 +13,21 @@ import (
 
 	"upgrador/internal/scanner"
 )
+
+// helmEnv returns the environment for helm commands, injecting the invoking
+// user's helm dirs when upgrador is running as root via sudo.
+func helmEnv() []string {
+	env := os.Environ()
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		home := fmt.Sprintf("/home/%s", sudoUser)
+		env = append(env,
+			"HELM_CONFIG_HOME="+home+"/.config/helm",
+			"HELM_CACHE_HOME="+home+"/.cache/helm",
+			"HELM_DATA_HOME="+home+"/.local/share/helm",
+		)
+	}
+	return env
+}
 
 const (
 	userAgent  = "upgrador/1.0"
@@ -69,7 +85,9 @@ func ensureHelmRepoUpdated() {
 	helmRepoUpdateOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		exec.CommandContext(ctx, "helm", "repo", "update").Run() //nolint:errcheck
+		cmd := exec.CommandContext(ctx, "helm", "repo", "update")
+		cmd.Env = helmEnv()
+		cmd.Run() //nolint:errcheck
 	})
 }
 
@@ -84,7 +102,9 @@ func helmChartLatest(chart, repoName string) string {
 	}
 	for _, query := range candidates {
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
-		out, err := exec.CommandContext(ctx, "helm", "search", "repo", query, "--output", "json").Output()
+		cmd := exec.CommandContext(ctx, "helm", "search", "repo", query, "--output", "json")
+		cmd.Env = helmEnv()
+		out, err := cmd.Output()
 		cancel()
 		if err != nil {
 			continue

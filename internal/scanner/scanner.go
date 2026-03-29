@@ -365,12 +365,32 @@ func findKubeconfig() string {
 	return ""
 }
 
-// helmCmd creates a helm exec.Cmd with KUBECONFIG injected when auto-detected.
+// findSudoUserHome returns the home directory of the user who invoked sudo,
+// or "" if not running under sudo.
+func findSudoUserHome() string {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		p := fmt.Sprintf("/home/%s", sudoUser)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// helmCmd creates a helm exec.Cmd with KUBECONFIG and helm XDG dirs injected
+// so repos configured by the invoking (non-root) user are visible when running as root.
 func helmCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "helm", args...)
+	env := os.Environ()
 	if kube := findKubeconfig(); kube != "" {
-		cmd.Env = append(os.Environ(), "KUBECONFIG="+kube)
+		env = append(env, "KUBECONFIG="+kube)
 	}
+	if home := findSudoUserHome(); home != "" {
+		env = append(env, "HELM_CONFIG_HOME="+home+"/.config/helm")
+		env = append(env, "HELM_CACHE_HOME="+home+"/.cache/helm")
+		env = append(env, "HELM_DATA_HOME="+home+"/.local/share/helm")
+	}
+	cmd.Env = env
 	return cmd
 }
 
