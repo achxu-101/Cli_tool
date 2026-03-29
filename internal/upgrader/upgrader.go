@@ -207,6 +207,43 @@ func upgradeDocker(_ scanner.Component, version string, w io.Writer, dryRun bool
 }
 
 func upgradeK3s(_ scanner.Component, version string, w io.Writer, dryRun bool) error {
+	const k3sKube = "KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
+
+	// Discover nodes so we can cordon/drain/uncordon each one safely.
+	step(w, "Discovering cluster nodes...")
+	var nodes []string
+	if !dryRun {
+		out, err := exec.Command("kubectl",
+			"--kubeconfig=/etc/rancher/k3s/k3s.yaml",
+			"get", "nodes", "-o", "jsonpath={.items[*].metadata.name}",
+		).Output()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			nodes = strings.Fields(string(out))
+		}
+	} else {
+		nodes = []string{"<node>"}
+	}
+	fmt.Fprintf(w, "nodes: %s\n", strings.Join(nodes, ", "))
+
+	// Cordon and drain every node before touching the control plane.
+	for _, node := range nodes {
+		step(w, fmt.Sprintf("Cordoning %s...", node))
+		if err := streamShell(fmt.Sprintf("%s kubectl cordon %s", k3sKube, node), w, dryRun); err != nil {
+			fmt.Fprintf(w, "warning: cordon %s failed: %v\n", node, err)
+		}
+
+		step(w, fmt.Sprintf("Draining %s...", node))
+		drain := fmt.Sprintf(
+			`%s kubectl drain %s --ignore-daemonsets --delete-emptydir-data --timeout=300s --force`,
+			k3sKube, node,
+		)
+		if err := streamShell(drain, w, dryRun); err != nil {
+			// On single-node clusters some pods can't be evicted — log and continue.
+			fmt.Fprintf(w, "warning: drain %s incomplete (continuing): %v\n", node, err)
+		}
+	}
+
+	// Upgrade k3s.
 	step(w, fmt.Sprintf("Installing K3s %s...", version))
 	if err := streamShell(fmt.Sprintf(
 		`curl -sfL https://get.k3s.io | `+
@@ -217,11 +254,24 @@ func upgradeK3s(_ scanner.Component, version string, w io.Writer, dryRun bool) e
 	), w, dryRun); err != nil {
 		return err
 	}
-	step(w, "Waiting for nodes to be Ready...")
-	return streamShell(
-		"KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl wait --for=condition=Ready node --all --timeout=300s",
-		w, dryRun,
-	)
+
+	// Wait for Ready then uncordon each node.
+	for _, node := range nodes {
+		step(w, fmt.Sprintf("Waiting for %s to be Ready...", node))
+		if err := streamShell(fmt.Sprintf(
+			"%s kubectl wait --for=condition=Ready node/%s --timeout=300s",
+			k3sKube, node,
+		), w, dryRun); err != nil {
+			fmt.Fprintf(w, "warning: %s not ready within timeout\n", node)
+		}
+
+		step(w, fmt.Sprintf("Uncordoning %s...", node))
+		if err := streamShell(fmt.Sprintf("%s kubectl uncordon %s", k3sKube, node), w, dryRun); err != nil {
+			fmt.Fprintf(w, "warning: uncordon %s failed: %v\n", node, err)
+		}
+	}
+
+	return nil
 }
 
 func upgradeHelm(w io.Writer, dryRun bool) error {
@@ -262,26 +312,48 @@ func upgradeHelmChart(c scanner.Component, version string, w io.Writer, dryRun b
 	if kubeconfigPath == "" {
 		return fmt.Errorf("kubeconfig not found — set KUBECONFIG or re-run and provide the path when prompted")
 	}
-	kubeEnv := "KUBECONFIG=" + kubeconfigPath
+	// Build env prefix for all helm and kubectl commands.
+	envParts := []string{"KUBECONFIG=" + kubeconfigPath}
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		home := fmt.Sprintf("/home/%s", sudoUser)
+		envParts = append(envParts,
+			"HELM_CONFIG_HOME="+home+"/.config/helm",
+			"HELM_CACHE_HOME="+home+"/.cache/helm",
+			"HELM_DATA_HOME="+home+"/.local/share/helm",
+		)
+	}
+	env := strings.Join(envParts, " ")
 
 	namespace := c.Namespace
 	if namespace == "" {
 		namespace = "default"
 	}
 
+	chart := c.AptPackage
+	repoName := c.GithubRepo
+
 	step(w, "Updating Helm repos...")
-	if err := streamShell(kubeEnv+" helm repo update", w, dryRun); err != nil {
+	if err := streamShell(env+" helm repo update", w, dryRun); err != nil {
 		return err
 	}
 
-	// AptPackage = chart name, GithubRepo = repo name (see scanner).
-	chart := c.AptPackage
-	repoName := c.GithubRepo
+	// Apply CRDs before upgrading — Helm does not update CRDs automatically.
+	step(w, fmt.Sprintf("Checking CRD updates for %s/%s %s...", repoName, chart, version))
+	crdCmd := fmt.Sprintf(
+		`crds=$(%s helm show crds %s/%s --version %s 2>/dev/null); `+
+			`if [ -n "$crds" ]; then `+
+			`echo "$crds" | KUBECONFIG=%s kubectl apply --server-side --force-conflicts -f -; `+
+			`else echo "  no CRDs to update"; fi`,
+		env, repoName, chart, version, kubeconfigPath,
+	)
+	if err := streamShell(crdCmd, w, dryRun); err != nil {
+		fmt.Fprintf(w, "warning: CRD update failed (proceeding): %v\n", err)
+	}
 
 	step(w, fmt.Sprintf("Upgrading %s to %s in namespace %s...", c.Name, version, namespace))
 	return streamShell(fmt.Sprintf(
 		`%s helm upgrade %s %s/%s --namespace %s --version %s --reuse-values --wait --timeout 10m`,
-		kubeEnv, c.Name, repoName, chart, namespace, version,
+		env, c.Name, repoName, chart, namespace, version,
 	), w, dryRun)
 }
 
