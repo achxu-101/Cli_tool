@@ -446,9 +446,12 @@ func ScanHelmCharts() []Component {
 	for _, r := range releases {
 		chartName, chartVer := splitChartVersion(r.Chart)
 
-		version := r.AppVersion
+		// Use chart version for consistent comparison with the resolver,
+		// which also returns chart versions from helm search repo.
+		// Fall back to AppVersion if chart version couldn't be parsed.
+		version := chartVer
 		if version == "" {
-			version = chartVer
+			version = r.AppVersion
 		}
 
 		// Try to find which repo owns this chart.

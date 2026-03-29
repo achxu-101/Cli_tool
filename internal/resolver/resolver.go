@@ -61,12 +61,26 @@ func githubLatest(repo string) (string, error) {
 	return payload.TagName, nil
 }
 
-// helmChartLatest queries the local helm repo cache for the latest chart version.
-// Tries "{namespace}/{chart}" first, then bare "{chart}" as a fallback.
-func helmChartLatest(chart, namespace string) string {
+// helmRepoUpdate runs `helm repo update` once per process to ensure the local
+// cache is fresh before searching. Errors are silently ignored.
+var helmRepoUpdateOnce sync.Once
+
+func ensureHelmRepoUpdated() {
+	helmRepoUpdateOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		exec.CommandContext(ctx, "helm", "repo", "update").Run() //nolint:errcheck
+	})
+}
+
+// helmChartLatest queries the helm repo cache for the latest chart version.
+// Tries "{repoName}/{chart}" first, then bare "{chart}" as a fallback.
+func helmChartLatest(chart, repoName string) string {
+	ensureHelmRepoUpdated()
+
 	candidates := []string{chart}
-	if namespace != "" {
-		candidates = append([]string{namespace + "/" + chart}, candidates...)
+	if repoName != "" {
+		candidates = append([]string{repoName + "/" + chart}, candidates...)
 	}
 	for _, query := range candidates {
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
