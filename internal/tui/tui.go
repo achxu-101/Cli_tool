@@ -62,6 +62,9 @@ type aptPackagesLoadedMsg struct {
 // selfUpdateMsg carries an optional update notice.
 type selfUpdateMsg struct{ notice string }
 
+// splashTimerMsg fires after the minimum splash display time.
+type splashTimerMsg struct{}
+
 // styles
 var (
 	styleBorder = lipgloss.NewStyle().
@@ -100,6 +103,8 @@ type Model struct {
 	updateNotice   string // non-empty if a newer version is available
 	scanStatus     string // current scan step shown while scanning
 	scanProgressCh chan string
+	splashTimerDone bool // true once the 2-second minimum has elapsed
+	scanDonePending bool // true when scan finished before the timer
 
 	// group selection (screen 2)
 	selectedGroups []string
@@ -180,7 +185,14 @@ func New(cfg *config.Config, dryRun, offline bool) Model {
 
 // Init starts the spinner, fires the background scan, and checks for updates.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.runScan(), m.checkSelfUpdate(), m.readScanProgress())
+	return tea.Batch(m.spinner.Tick, m.runScan(), m.checkSelfUpdate(), m.readScanProgress(), splashTimer())
+}
+
+// splashTimer fires splashTimerMsg after the minimum splash display time.
+func splashTimer() tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+		return splashTimerMsg{}
+	})
 }
 
 // runScan performs the scan (and resolve, unless offline) off the UI goroutine.
@@ -493,7 +505,18 @@ func (m Model) updateSplash(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanErr = msg.err
 		m.results = msg.results
 		m.groupSummary = buildGroupSummary(m.results)
-		m.screen = screenScan
+		if m.splashTimerDone {
+			m.screen = screenScan
+		} else {
+			m.scanDonePending = true
+		}
+		return m, nil
+
+	case splashTimerMsg:
+		m.splashTimerDone = true
+		if m.scanDonePending {
+			m.screen = screenScan
+		}
 		return m, nil
 
 	case spinner.TickMsg:
