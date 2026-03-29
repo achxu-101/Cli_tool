@@ -1361,10 +1361,14 @@ func (m Model) viewAptPackages() string {
 var groupOrder = []string{"OS", "Binaries", "Services", "Helm Charts"}
 
 func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Kubeconfig prompt overlay.
+	// Kubeconfig edit form overlay.
 	if m.kubeconfigForm != nil {
 		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc") {
+			m.kubeconfigForm = nil
+			return m, nil
 		}
 		form, cmd := m.kubeconfigForm.Update(msg)
 		if f, ok := form.(*huh.Form); ok {
@@ -1372,8 +1376,10 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.kubeconfigForm.State == huh.StateCompleted {
 			m.kubeconfigPath = strings.TrimSpace(m.kubeconfigInput)
+			_ = m.cfg.SetKubeconfigPath(m.kubeconfigPath)
 			m.kubeconfigForm = nil
-			return m.startUpgrades()
+			// Return to confirm so user can review then press ENTER.
+			return m, nil
 		}
 		return m, cmd
 	}
@@ -1384,6 +1390,20 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "b":
 			return m.transitionToComponentSelect()
+		case "k":
+			// Open kubeconfig edit form, pre-filled with current or auto-detected value.
+			if m.kubeconfigPath == "" {
+				m.kubeconfigPath = upgrader.DetectKubeconfig()
+			}
+			m.kubeconfigInput = m.kubeconfigPath
+			m.kubeconfigForm = huh.NewForm(huh.NewGroup(
+				huh.NewInput().
+					Title("Kubeconfig path for Helm operations").
+					Description("e.g. /etc/rancher/k3s/k3s.yaml   (esc to cancel)").
+					Placeholder("/etc/rancher/k3s/k3s.yaml").
+					Value(&m.kubeconfigInput),
+			))
+			return m, m.kubeconfigForm.Init()
 		case "enter":
 			return m.startUpgrades()
 		}
@@ -1434,7 +1454,34 @@ func (m Model) viewConfirm() string {
 
 	b.WriteString(styleDim.Render(fmt.Sprintf("Total: %d upgrades", len(m.confirmedResults))))
 	b.WriteString("\n\n")
-	b.WriteString(styleDim.Render("[ENTER] Run upgrades     [b] Go back     [q] Cancel"))
+
+	// Show kubeconfig info when Helm charts are queued.
+	hasHelm := false
+	for _, r := range m.confirmedResults {
+		if r.Component.Group == "Helm Charts" {
+			hasHelm = true
+			break
+		}
+	}
+	if hasHelm {
+		kubePath := m.kubeconfigPath
+		if kubePath == "" {
+			kubePath = upgrader.DetectKubeconfig()
+		}
+		if kubePath == "" {
+			kubePath = styleRed.Render("not detected")
+		}
+		b.WriteString(fmt.Sprintf("Helm kubeconfig: %s   %s\n\n",
+			styleCyan.Render(kubePath),
+			styleDim.Render("[k] change")))
+	}
+
+	hint := "[ENTER] Run upgrades"
+	if hasHelm {
+		hint += "   [k] Kubeconfig"
+	}
+	hint += "   [b] Go back   [q] Cancel"
+	b.WriteString(styleDim.Render(hint))
 
 	return styleBorder.Render(b.String())
 }
