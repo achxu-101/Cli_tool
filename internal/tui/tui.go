@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -162,6 +163,8 @@ type Model struct {
 	upgradeContent string
 	vp             viewport.Model
 	upgradeResults []upgradeResult
+	logFile        *os.File
+	logPath        string
 
 	// summary (screen 6)
 	rebootRequired bool
@@ -244,6 +247,24 @@ func (m Model) readScanProgress() tea.Cmd {
 		}
 		return scanProgressMsg(status)
 	}
+}
+
+// openLogFile creates a timestamped log file in the invoking user's home directory.
+func openLogFile() (*os.File, string) {
+	home := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		home = "/home/" + sudoUser
+	} else {
+		home, _ = os.UserHomeDir()
+	}
+	dir := filepath.Join(home, ".local", "share", "upgrador", "logs")
+	_ = os.MkdirAll(dir, 0o755)
+	name := filepath.Join(dir, time.Now().Format("2006-01-02_15-04-05")+".log")
+	f, err := os.Create(name)
+	if err != nil {
+		return nil, ""
+	}
+	return f, name
 }
 
 // rescanHelmCmd runs ScanHelmCharts with the given kubeconfig and resolves versions.
@@ -1466,6 +1487,19 @@ func (m Model) startUpgrades() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.confirmedResults = sorted
+
+	// Open log file for this run.
+	m.logFile, m.logPath = openLogFile()
+	if m.logFile != nil {
+		fmt.Fprintf(m.logFile, "=== upgrador run %s ===\n\n", time.Now().Format("2006-01-02 15:04:05"))
+		fmt.Fprintf(m.logFile, "Plan (%d upgrades):\n", len(m.confirmedResults))
+		for _, r := range m.confirmedResults {
+			fmt.Fprintf(m.logFile, "  • %-20s %s → %s  [%s]\n",
+				r.Component.Name, r.Component.Current, r.Latest, r.Component.Method)
+		}
+		fmt.Fprintf(m.logFile, "\n")
+	}
+
 	return m.launchCurrentUpgrade()
 }
 
@@ -1475,6 +1509,12 @@ func (m Model) launchCurrentUpgrade() (tea.Model, tea.Cmd) {
 	m.upgradeReader = pr
 	m.upgradeContent = ""
 	m.vp.SetContent("")
+
+	if m.logFile != nil {
+		fmt.Fprintf(m.logFile, "--- [%d/%d] %s  %s → %s  [%s] ---\n",
+			m.upgradeIdx+1, len(m.confirmedResults),
+			r.Component.Name, r.Component.Current, r.Latest, r.Component.Method)
+	}
 
 	dryRun := m.dryRun
 	go func() {
@@ -1518,15 +1558,30 @@ func (m Model) updateUpgrade(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.upgradeContent += string(msg)
 		m.vp.SetContent(m.upgradeContent)
 		m.vp.GotoBottom()
+		if m.logFile != nil {
+			m.logFile.WriteString(string(msg))
+		}
 		return m, m.readOutput()
 
 	case upgradeDoneMsg:
 		r := m.confirmedResults[m.upgradeIdx]
 		m.upgradeResults = append(m.upgradeResults, upgradeResult{name: r.Component.Name, err: msg.err})
+		if m.logFile != nil {
+			if msg.err != nil {
+				fmt.Fprintf(m.logFile, "[FAILED] %s: %v\n\n", r.Component.Name, msg.err)
+			} else {
+				fmt.Fprintf(m.logFile, "[OK] %s\n\n", r.Component.Name)
+			}
+		}
 		m.upgradeIdx++
 		if m.upgradeIdx >= len(m.confirmedResults) {
 			m.screen = screenSummary
 			m.rebootRequired = rebootRequired()
+			if m.logFile != nil {
+				fmt.Fprintf(m.logFile, "=== run complete %s ===\n", time.Now().Format("2006-01-02 15:04:05"))
+				m.logFile.Close()
+				m.logFile = nil
+			}
 			return m, nil
 		}
 		return m.launchCurrentUpgrade()
@@ -1580,9 +1635,9 @@ func (m Model) viewSummary() string {
 			b.WriteString(styleGreen.Render("✓") + "  " + r.name + "\n")
 			succeeded++
 		} else {
-			b.WriteString(styleRed.Render("✗") + "  " +
-				fmt.Sprintf("%-18s", r.name) +
-				styleRed.Render("FAILED: "+r.err.Error()) + "\n")
+			// Pad name then add error on next line so long names never run into the message.
+			b.WriteString(styleRed.Render("✗") + "  " + fmt.Sprintf("%-26s", r.name) + "\n")
+			b.WriteString("     " + styleRed.Render("└─ FAILED: "+r.err.Error()) + "\n")
 		}
 	}
 
@@ -1592,6 +1647,11 @@ func (m Model) viewSummary() string {
 		"%d attempted  •  %d succeeded  •  %d failed",
 		len(m.upgradeResults), succeeded, failed,
 	)))
+
+	if m.logPath != "" {
+		b.WriteString("\n")
+		b.WriteString(styleDim.Render("Log: " + m.logPath))
+	}
 
 	if m.rebootRequired {
 		b.WriteString("\n\n")
