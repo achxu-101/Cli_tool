@@ -371,8 +371,14 @@ func (m Model) updateScan(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateGroupSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "q" || k.String() == "ctrl+c") {
-		return m, tea.Quit
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "b", "esc":
+			m.screen = screenScan
+			return m, nil
+		}
 	}
 
 	form, cmd := m.groupForm.Update(msg)
@@ -475,6 +481,15 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "b", "esc":
+			// Go back to previous group, or to group select if on the first group.
+			if m.currentGroupIndex > 0 {
+				m.currentGroupIndex--
+				m = m.initCompSelected()
+				return m, nil
+			}
+			m.confirmedResults = nil
+			return m.transitionToGroupSelect()
 		case "up", "k":
 			if m.compCursor > 0 {
 				m.compCursor--

@@ -65,8 +65,9 @@ func ScanAptPackages() ([]AptPackage, error) {
 			continue
 		}
 		// Format: "name/suite newver arch [upgradable from: oldver]"
+		// Lines without "/" in the first field are warnings or headers — skip them.
 		parts := strings.Fields(line)
-		if len(parts) < 2 {
+		if len(parts) < 2 || !strings.Contains(parts[0], "/") {
 			continue
 		}
 		name := strings.SplitN(parts[0], "/", 2)[0]
