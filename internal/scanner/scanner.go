@@ -377,13 +377,13 @@ func findSudoUserHome() string {
 	return ""
 }
 
-// helmCmd creates a helm exec.Cmd with KUBECONFIG and helm XDG dirs injected
-// so repos configured by the invoking (non-root) user are visible when running as root.
-func helmCmd(ctx context.Context, args ...string) *exec.Cmd {
+// helmCmdWithKube creates a helm exec.Cmd with an explicit kubeconfig path
+// and the invoking user's helm XDG dirs injected.
+func helmCmdWithKube(ctx context.Context, kubeconfig string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "helm", args...)
 	env := os.Environ()
-	if kube := findKubeconfig(); kube != "" {
-		env = append(env, "KUBECONFIG="+kube)
+	if kubeconfig != "" {
+		env = append(env, "KUBECONFIG="+kubeconfig)
 	}
 	if home := findSudoUserHome(); home != "" {
 		env = append(env, "HELM_CONFIG_HOME="+home+"/.config/helm")
@@ -394,14 +394,19 @@ func helmCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// helmCmd creates a helm exec.Cmd using auto-detected kubeconfig.
+func helmCmd(ctx context.Context, args ...string) *exec.Cmd {
+	return helmCmdWithKube(ctx, findKubeconfig(), args...)
+}
+
 // helmRepoMap builds a map from chart-name prefix → repo name by running
 // `helm repo list` and `helm search repo` cross-referencing. Returns an empty
 // map if helm is unavailable.
-func helmRepoMap() map[string]string {
+func helmRepoMap(kubeconfig string) map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	out, err := helmCmd(ctx, "repo", "list", "-o", "json").Output()
+	out, err := helmCmdWithKube(ctx, kubeconfig, "repo", "list", "-o", "json").Output()
 	if err != nil {
 		return nil
 	}
@@ -418,7 +423,7 @@ func helmRepoMap() map[string]string {
 	m := make(map[string]string)
 	for _, repo := range repos {
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-		searchOut, err := helmCmd(ctx2, "search", "repo", repo.Name+"/", "-o", "json").Output()
+		searchOut, err := helmCmdWithKube(ctx2, kubeconfig, "search", "repo", repo.Name+"/", "-o", "json").Output()
 		cancel2()
 		if err != nil {
 			continue
@@ -438,14 +443,39 @@ func helmRepoMap() map[string]string {
 	return m
 }
 
-// ScanHelmCharts lists all Helm releases across all namespaces.
-// GithubRepo holds the resolved repo name (from helm repo list); AptPackage holds the chart name.
-// If the repo cannot be determined, the component is marked IsUnknown.
-func ScanHelmCharts() []Component {
+// helmKubeconfigCandidates returns the ordered list of kubeconfig paths to try,
+// with configOverride (from saved config or user input) first.
+func helmKubeconfigCandidates(configOverride string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	if configOverride != "" {
+		add(configOverride)
+	}
+	if k := os.Getenv("KUBECONFIG"); k != "" {
+		add(k)
+	}
+	if home := findSudoUserHome(); home != "" {
+		add(home + "/.kube/config")
+	}
+	add("/root/.kube/config")
+	add("/etc/rancher/k3s/k3s.yaml")
+	add("") // bare helm — uses whatever helm finds on its own
+	return out
+}
+
+// scanHelmChartsWithKubeconfig runs helm list with a specific kubeconfig.
+// Returns nil if helm returns an error or no releases.
+func scanHelmChartsWithKubeconfig(kubeconfig string) []Component {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	out, err := helmCmd(ctx, "list", "--all-namespaces", "-o", "json").Output()
+	out, err := helmCmdWithKube(ctx, kubeconfig, "list", "--all-namespaces", "-o", "json").Output()
 	if err != nil {
 		return nil
 	}
@@ -456,29 +486,23 @@ func ScanHelmCharts() []Component {
 		Chart      string `json:"chart"`
 		AppVersion string `json:"app_version"`
 	}
-	if err := json.Unmarshal(out, &releases); err != nil {
+	if err := json.Unmarshal(out, &releases); err != nil || len(releases) == 0 {
 		return nil
 	}
 
-	repoMap := helmRepoMap() // chart-name → repo-name
+	repoMap := helmRepoMap(kubeconfig) // chart-name → repo-name
 
 	results := make([]Component, 0, len(releases))
 	for _, r := range releases {
 		chartName, chartVer := splitChartVersion(r.Chart)
-
-		// Use chart version for consistent comparison with the resolver,
-		// which also returns chart versions from helm search repo.
-		// Fall back to AppVersion if chart version couldn't be parsed.
 		version := chartVer
 		if version == "" {
 			version = r.AppVersion
 		}
 
-		// Try to find which repo owns this chart.
 		repoName := repoMap[chartName]
 		isUnknown := repoName == ""
 		if isUnknown {
-			// Fall back to namespace as a best-effort search prefix.
 			repoName = r.Namespace
 		}
 
@@ -496,12 +520,25 @@ func ScanHelmCharts() []Component {
 			IsKnown:     !isUnknown,
 			IsUnknown:   isUnknown,
 			Method:      method,
-			GithubRepo:  repoName,  // repo name for helm search / upgrade
-			AptPackage:  chartName, // chart name for helm upgrade
+			GithubRepo:  repoName,
+			AptPackage:  chartName,
 			Namespace:   r.Namespace,
 		})
 	}
 	return results
+}
+
+// ScanHelmCharts lists all Helm releases across all namespaces.
+// configOverride is the kubeconfig path saved in config (may be empty).
+// It tries multiple kubeconfig paths in order and returns the first success.
+// Always returns a non-nil slice (may be empty if no charts found).
+func ScanHelmCharts(configOverride string) []Component {
+	for _, kube := range helmKubeconfigCandidates(configOverride) {
+		if comps := scanHelmChartsWithKubeconfig(kube); len(comps) > 0 {
+			return comps
+		}
+	}
+	return []Component{}
 }
 
 // splitChartVersion splits a Helm chart field like "argo-cd-9.1.0" or
@@ -544,7 +581,7 @@ func ScanAllWithProgress(cfg *config.Config, progress func(string)) []Component 
 	progress("Scanning services...")
 	all = append(all, safeRun("ScanServices", func() []Component { return ScanServices(cfg) })...)
 	progress("Scanning Helm charts...")
-	all = append(all, safeRun("ScanHelmCharts", func() []Component { return ScanHelmCharts() })...)
+	all = append(all, safeRun("ScanHelmCharts", func() []Component { return ScanHelmCharts(cfg.KubeconfigPath) })...)
 	return deduplicate(all)
 }
 
@@ -556,7 +593,7 @@ func ScanAll(cfg *config.Config) []Component {
 	all = append(all, safeRun("ScanApt", func() []Component { return ScanApt() })...)
 	all = append(all, safeRun("ScanBinaries", func() []Component { return ScanBinaries(cfg) })...)
 	all = append(all, safeRun("ScanServices", func() []Component { return ScanServices(cfg) })...)
-	all = append(all, safeRun("ScanHelmCharts", func() []Component { return ScanHelmCharts() })...)
+	all = append(all, safeRun("ScanHelmCharts", func() []Component { return ScanHelmCharts(cfg.KubeconfigPath) })...)
 	return deduplicate(all)
 }
 

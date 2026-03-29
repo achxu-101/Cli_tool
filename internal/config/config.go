@@ -24,8 +24,9 @@ type UserBinary struct {
 
 // Config is the contents of ~/.config/upgrador/known.json.
 type Config struct {
-	Version  string                `json:"version"`
-	Binaries map[string]UserBinary `json:"binaries"`
+	Version        string                `json:"version"`
+	Binaries       map[string]UserBinary `json:"binaries"`
+	KubeconfigPath string                `json:"kubeconfig_path,omitempty"`
 }
 
 func configPath() (string, error) {
@@ -98,5 +99,11 @@ func (c *Config) SetBinary(b UserBinary) error {
 // RemoveBinary deletes the named binary entry and immediately persists the config.
 func (c *Config) RemoveBinary(name string) error {
 	delete(c.Binaries, name)
+	return c.Save()
+}
+
+// SetKubeconfigPath persists the kubeconfig path to use for Helm operations.
+func (c *Config) SetKubeconfigPath(path string) error {
+	c.KubeconfigPath = path
 	return c.Save()
 }

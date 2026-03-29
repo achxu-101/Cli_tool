@@ -66,6 +66,11 @@ type selfUpdateMsg struct{ notice string }
 // splashTimerMsg fires after the minimum splash display time.
 type splashTimerMsg struct{}
 
+// helmRescanDoneMsg carries the result of a Helm re-scan with a custom kubeconfig.
+type helmRescanDoneMsg struct {
+	results []resolver.Result
+}
+
 // styles
 var (
 	styleBorder = lipgloss.NewStyle().
@@ -110,6 +115,11 @@ type Model struct {
 	// view-all screen
 	viewAllCursor int
 	viewAllOffset int
+
+	// helm kubeconfig form (shown in component select when Helm Charts is empty)
+	helmScanKubeconfigInput string
+	helmScanForm            *huh.Form
+	helmScanLoading         bool
 
 	// group selection (screen 2)
 	selectedGroups []string
@@ -236,6 +246,24 @@ func (m Model) readScanProgress() tea.Cmd {
 	}
 }
 
+// rescanHelmCmd runs ScanHelmCharts with the given kubeconfig and resolves versions.
+func (m Model) rescanHelmCmd(kubeconfig string) tea.Cmd {
+	offline := m.offline
+	return func() tea.Msg {
+		comps := scanner.ScanHelmCharts(kubeconfig)
+		var results []resolver.Result
+		if offline {
+			results = make([]resolver.Result, len(comps))
+			for i, c := range comps {
+				results[i] = resolver.Result{Component: c}
+			}
+		} else {
+			results = resolver.ResolveAll(comps)
+		}
+		return helmRescanDoneMsg{results: results}
+	}
+}
+
 // checkSelfUpdate silently queries GitHub for a newer release.
 func (m Model) checkSelfUpdate() tea.Cmd {
 	return func() tea.Msg {
@@ -259,6 +287,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range m.aptSelected {
 			m.aptSelected[i] = true // pre-select all
 		}
+		return m, nil
+	}
+	// Handle helm re-scan result: replace existing Helm Charts results.
+	if h, ok := msg.(helmRescanDoneMsg); ok {
+		m.helmScanLoading = false
+		m.helmScanForm = nil
+		// Remove old helm results and append new ones.
+		filtered := m.results[:0]
+		for _, r := range m.results {
+			if r.Component.Group != "Helm Charts" {
+				filtered = append(filtered, r)
+			}
+		}
+		m.results = append(filtered, h.results...)
+		m.groupSummary = buildGroupSummary(m.results)
 		return m, nil
 	}
 
@@ -345,6 +388,29 @@ func (m Model) updateGroupSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 	items := m.currentGroupResults()
 
+	// Helm kubeconfig form: shown when Helm Charts group has no releases.
+	if m.helmScanForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "b" || k.String() == "esc") {
+			m.helmScanForm = nil
+			return m.advanceGroup()
+		}
+		form, cmd := m.helmScanForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.helmScanForm = f
+		}
+		if m.helmScanForm.State == huh.StateCompleted {
+			kube := strings.TrimSpace(m.helmScanKubeconfigInput)
+			_ = m.cfg.SetKubeconfigPath(kube)
+			m.helmScanForm = nil
+			m.helmScanLoading = true
+			return m, m.rescanHelmCmd(kube)
+		}
+		return m, cmd
+	}
+
 	// Offline version-collection mode.
 	if m.offlineForm != nil {
 		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "ctrl+c" {
@@ -375,6 +441,32 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, editCmd
 		}
 		return m, cmd
+	}
+
+	// Helm Charts group with no releases — show kubeconfig form on any key except quit.
+	currentGroup := ""
+	if m.currentGroupIndex < len(m.selectedGroups) {
+		currentGroup = m.selectedGroups[m.currentGroupIndex]
+	}
+	if currentGroup == "Helm Charts" && len(items) == 0 && !m.helmScanLoading {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "b", "esc":
+				return m.advanceGroup()
+			default:
+				m.helmScanKubeconfigInput = m.cfg.KubeconfigPath
+				m.helmScanForm = huh.NewForm(huh.NewGroup(
+					huh.NewInput().
+						Title("Kubeconfig path (e.g. /home/user/.kube/config)").
+						Placeholder("/etc/rancher/k3s/k3s.yaml").
+						Value(&m.helmScanKubeconfigInput),
+				))
+				return m, m.helmScanForm.Init()
+			}
+		}
+		return m, nil
 	}
 
 	// Normal browsing mode.
@@ -430,6 +522,12 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.startOfflineVersionPrompt()
 			}
 			return m.advanceGroup()
+		}
+	case spinner.TickMsg:
+		if m.helmScanLoading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
 		}
 	}
 	return m, nil
@@ -620,12 +718,17 @@ func (m Model) renderScanTable() string {
 	for _, row := range m.groupSummary {
 		// Pad plain strings first, then apply color so ANSI codes don't break alignment.
 		name := styleGroupName.Render(fmt.Sprintf("%-18s", row.name))
-		total := fmt.Sprintf("%-8d", row.total)
-		var outdatedStr, status string
-		if row.outdated > 0 {
+		var total, outdatedStr, status string
+		if row.name == "Helm Charts" && row.total == 0 {
+			total = fmt.Sprintf("%-8s", "-")
+			outdatedStr = fmt.Sprintf("%-12s", "-")
+			status = styleRed.Render("✗  not found")
+		} else if row.outdated > 0 {
+			total = fmt.Sprintf("%-8d", row.total)
 			outdatedStr = styleYellow.Render(fmt.Sprintf("%-12d", row.outdated))
 			status = styleYellow.Render("⚠  action needed")
 		} else {
+			total = fmt.Sprintf("%-8d", row.total)
 			outdatedStr = fmt.Sprintf("%-12d", row.outdated)
 			status = styleGreen.Render("✓  up to date")
 		}
@@ -652,7 +755,8 @@ func buildGroupSummary(results []resolver.Result) []groupRow {
 
 	rows := make([]groupRow, 0, len(order))
 	for _, name := range order {
-		if totals[name] == 0 {
+		// Always show Helm Charts so users can configure a kubeconfig if missing.
+		if totals[name] == 0 && name != "Helm Charts" {
 			continue
 		}
 		rows = append(rows, groupRow{name: name, total: totals[name], outdated: outdateds[name]})
@@ -797,8 +901,15 @@ func (m Model) transitionToGroupSelect() (tea.Model, tea.Cmd) {
 	var options []huh.Option[string]
 	var defaults []string
 	for _, row := range m.groupSummary {
-		if row.outdated > 0 || m.offline {
-			label := fmt.Sprintf("%-16s (%d outdated)", row.name, row.outdated)
+		// Helm Charts always appears so users can configure a kubeconfig if needed.
+		alwaysShow := row.name == "Helm Charts"
+		if row.outdated > 0 || m.offline || alwaysShow {
+			var label string
+			if row.name == "Helm Charts" && row.total == 0 {
+				label = fmt.Sprintf("%-16s (not found — configure)", row.name)
+			} else {
+				label = fmt.Sprintf("%-16s (%d outdated)", row.name, row.outdated)
+			}
 			options = append(options, huh.NewOption(label, row.name))
 			if row.outdated > 0 {
 				defaults = append(defaults, row.name)
@@ -940,9 +1051,31 @@ func (m Model) viewComponentSelect() string {
 	if m.editingIdx >= 0 && m.editForm != nil {
 		return m.editForm.View()
 	}
+	// Helm kubeconfig form overlay.
+	if m.helmScanForm != nil {
+		return m.helmScanForm.View()
+	}
 
 	items := m.currentGroupResults()
+	currentGroup := ""
+	if m.currentGroupIndex < len(m.selectedGroups) {
+		currentGroup = m.selectedGroups[m.currentGroupIndex]
+	}
+
 	if len(items) == 0 {
+		if currentGroup == "Helm Charts" {
+			if m.helmScanLoading {
+				return styleBorder.Render(
+					styleTitle.Render("Helm Charts") + "\n\n" +
+						m.spinner.View() + "  " + styleDim.Render("Scanning with provided kubeconfig..."),
+				)
+			}
+			return styleBorder.Render(
+				styleTitle.Render("Helm Charts") + "\n\n" +
+					styleRed.Render("  No Helm releases found.") + "\n" +
+					styleDim.Render("  Press any key to enter a kubeconfig path, b to skip."),
+			)
+		}
 		return styleBorder.Render(styleDim.Render("No components found.\n\nPress ENTER to continue."))
 	}
 
