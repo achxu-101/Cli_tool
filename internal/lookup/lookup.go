@@ -80,6 +80,20 @@ var knownBinaries = []KnownBinary{
 	},
 }
 
+// knownHelmReleases maps Helm release names to their upgrade method.
+// Entries here take priority over the scanner's repo-detection for known releases.
+var knownHelmReleases = []KnownBinary{
+	{
+		// Managed by k3s — upgraded automatically with k3s itself.
+		Name:   "traefik",
+		Method: MethodSkip,
+	},
+	{
+		Name:   "traefik-crd",
+		Method: MethodSkip,
+	},
+}
+
 var knownServices = []KnownService{
 	{
 		Name:       "keepalived",
@@ -103,8 +117,9 @@ var knownServices = []KnownService{
 
 // Build lookup maps once at init time.
 var (
-	binaryMap  map[string]*KnownBinary
-	serviceMap map[string]*KnownService
+	binaryMap      map[string]*KnownBinary
+	serviceMap     map[string]*KnownService
+	helmReleaseMap map[string]*KnownBinary
 )
 
 func init() {
@@ -116,6 +131,11 @@ func init() {
 	serviceMap = make(map[string]*KnownService, len(knownServices))
 	for i := range knownServices {
 		serviceMap[knownServices[i].Name] = &knownServices[i]
+	}
+
+	helmReleaseMap = make(map[string]*KnownBinary, len(knownHelmReleases))
+	for i := range knownHelmReleases {
+		helmReleaseMap[knownHelmReleases[i].Name] = &knownHelmReleases[i]
 	}
 }
 
@@ -129,6 +149,12 @@ func LookupBinary(name string) (*KnownBinary, bool) {
 func LookupService(name string) (*KnownService, bool) {
 	s, ok := serviceMap[name]
 	return s, ok
+}
+
+// LookupHelmRelease returns the upgrade definition for a well-known Helm release.
+func LookupHelmRelease(name string) (*KnownBinary, bool) {
+	r, ok := helmReleaseMap[name]
+	return r, ok
 }
 
 // AllKnownBinaryNames returns the names of all binaries in the registry.

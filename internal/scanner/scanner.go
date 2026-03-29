@@ -482,6 +482,12 @@ func ScanHelmCharts() []Component {
 			repoName = r.Namespace
 		}
 
+		method := "helm_upgrade"
+		if kr, ok := lookup.LookupHelmRelease(r.Name); ok {
+			method = string(kr.Method)
+			isUnknown = false
+		}
+
 		results = append(results, Component{
 			Name:        r.Name,
 			Group:       "Helm Charts",
@@ -489,21 +495,28 @@ func ScanHelmCharts() []Component {
 			IsInstalled: true,
 			IsKnown:     !isUnknown,
 			IsUnknown:   isUnknown,
-			Method:      "helm_upgrade",
-			GithubRepo:  repoName,   // repo name for helm search / upgrade
-			AptPackage:  chartName,  // chart name for helm upgrade
+			Method:      method,
+			GithubRepo:  repoName,  // repo name for helm search / upgrade
+			AptPackage:  chartName, // chart name for helm upgrade
 			Namespace:   r.Namespace,
 		})
 	}
 	return results
 }
 
-// splitChartVersion splits a Helm chart field like "argo-cd-9.1.0" into
-// chart name ("argo-cd") and version ("9.1.0"). Version starts with a digit.
+// splitChartVersion splits a Helm chart field like "argo-cd-9.1.0" or
+// "cert-manager-v1.11.4" into chart name and version. A version segment
+// starts with a digit or with 'v' followed by a digit.
 func splitChartVersion(chart string) (name, version string) {
 	parts := strings.Split(chart, "-")
 	for i := len(parts) - 1; i >= 1; i-- {
-		if len(parts[i]) > 0 && parts[i][0] >= '0' && parts[i][0] <= '9' {
+		p := parts[i]
+		if len(p) == 0 {
+			continue
+		}
+		startsWithDigit := p[0] >= '0' && p[0] <= '9'
+		startsWithV := len(p) > 1 && p[0] == 'v' && p[1] >= '0' && p[1] <= '9'
+		if startsWithDigit || startsWithV {
 			return strings.Join(parts[:i], "-"), strings.Join(parts[i:], "-")
 		}
 	}
