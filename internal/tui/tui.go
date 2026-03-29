@@ -26,6 +26,7 @@ type screen int
 const (
 	screenSplash screen = iota
 	screenScan
+	screenViewAll
 	screenGroupSelect
 	screenComponentSelect
 	screenAptPackages
@@ -105,6 +106,10 @@ type Model struct {
 	scanProgressCh chan string
 	splashTimerDone bool // true once the 2-second minimum has elapsed
 	scanDonePending bool // true when scan finished before the timer
+
+	// view-all screen
+	viewAllCursor int
+	viewAllOffset int
 
 	// group selection (screen 2)
 	selectedGroups []string
@@ -262,6 +267,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSplash(msg)
 	case screenScan:
 		return m.updateScan(msg)
+	case screenViewAll:
+		return m.updateViewAll(msg)
 	case screenGroupSelect:
 		return m.updateGroupSelect(msg)
 	case screenComponentSelect:
@@ -284,7 +291,14 @@ func (m Model) updateScan(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "enter":
+		case "v":
+			if m.results != nil {
+				m.screen = screenViewAll
+				m.viewAllCursor = 0
+				m.viewAllOffset = 0
+				return m, nil
+			}
+		case "u", "enter":
 			if m.results != nil {
 				return m.transitionToGroupSelect()
 			}
@@ -468,6 +482,8 @@ func (m Model) View() string {
 		return m.viewSplash()
 	case screenScan:
 		return m.viewScan()
+	case screenViewAll:
+		return m.viewViewAll()
 	case screenGroupSelect:
 		return m.viewGroupSelect()
 	case screenComponentSelect:
@@ -617,7 +633,7 @@ func (m Model) renderScanTable() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render("  Press ENTER to continue, q to quit"))
+	b.WriteString(styleDim.Render("  [v] View all findings   [u / ENTER] Upgrade   [q] Quit"))
 	return b.String()
 }
 
@@ -642,6 +658,137 @@ func buildGroupSummary(results []resolver.Result) []groupRow {
 		rows = append(rows, groupRow{name: name, total: totals[name], outdated: outdateds[name]})
 	}
 	return rows
+}
+
+// ── Screen 1.5: View all findings ────────────────────────────────────────────
+
+const viewAllPageSize = 24
+
+// viewAllRows flattens all results into displayable rows, inserting group headers.
+type viewAllRow struct {
+	isHeader bool
+	header   string
+	result   resolver.Result
+}
+
+func buildViewAllRows(results []resolver.Result) []viewAllRow {
+	order := []string{"OS", "Binaries", "Services", "Helm Charts"}
+	byGroup := make(map[string][]resolver.Result, 4)
+	for _, r := range results {
+		byGroup[r.Component.Group] = append(byGroup[r.Component.Group], r)
+	}
+	var rows []viewAllRow
+	for _, g := range order {
+		items := byGroup[g]
+		if len(items) == 0 {
+			continue
+		}
+		rows = append(rows, viewAllRow{isHeader: true, header: g})
+		for _, r := range items {
+			rows = append(rows, viewAllRow{result: r})
+		}
+	}
+	return rows
+}
+
+func (m Model) updateViewAll(msg tea.Msg) (tea.Model, tea.Cmd) {
+	rows := buildViewAllRows(m.results)
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "b", "esc":
+			m.screen = screenScan
+			return m, nil
+		case "up", "k":
+			if m.viewAllCursor > 0 {
+				m.viewAllCursor--
+				if m.viewAllCursor < m.viewAllOffset {
+					m.viewAllOffset--
+				}
+			}
+		case "down", "j":
+			if m.viewAllCursor < len(rows)-1 {
+				m.viewAllCursor++
+				if m.viewAllCursor >= m.viewAllOffset+viewAllPageSize {
+					m.viewAllOffset++
+				}
+			}
+		case "u", "enter":
+			return m.transitionToGroupSelect()
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewViewAll() string {
+	rows := buildViewAllRows(m.results)
+	total := len(rows)
+
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("ALL FINDINGS"))
+	b.WriteString("\n")
+	b.WriteString(styleDim.Render("j/k navigate   u/ENTER to upgrade   b back   q quit"))
+	b.WriteString("\n\n")
+
+	end := m.viewAllOffset + viewAllPageSize
+	if end > total {
+		end = total
+	}
+
+	for i := m.viewAllOffset; i < end; i++ {
+		row := rows[i]
+		if row.isHeader {
+			b.WriteString(styleGroupName.Render(fmt.Sprintf("  ── %s ", row.header)))
+			b.WriteString("\n")
+			continue
+		}
+
+		r := row.result
+		prefix := "   "
+		if i == m.viewAllCursor {
+			prefix = "  >"
+		}
+
+		name := fmt.Sprintf("%-24s", r.Component.Name)
+		if i == m.viewAllCursor {
+			name = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color("255")).Render(name)
+		} else {
+			name = styleGroupName.Render(name)
+		}
+
+		current := styleGrey.Render(fmt.Sprintf("%-14s", r.Component.Current))
+		arrow := styleGrey.Render("→")
+
+		var latest string
+		switch {
+		case r.Component.IsUnknown || r.Latest == "":
+			latest = styleYellow.Render(fmt.Sprintf("%-14s", "???"))
+		case r.Latest == "skipped":
+			latest = styleDim.Render(fmt.Sprintf("%-14s", "skipped"))
+		case r.IsOutdated:
+			latest = styleCyan.Render(fmt.Sprintf("%-14s", r.Latest))
+		default:
+			latest = styleGreen.Render(fmt.Sprintf("%-14s", r.Latest))
+		}
+
+		var badge string
+		if r.IsOutdated {
+			badge = styleYellow.Render("⚠ outdated")
+		} else if r.Latest == "skipped" {
+			badge = styleDim.Render("  skipped ")
+		} else {
+			badge = styleGreen.Render("✓ current ")
+		}
+
+		fmt.Fprintf(&b, "%s %s  %s %s  %s  %s\n", prefix, name, current, arrow, latest, badge)
+	}
+
+	if total > viewAllPageSize {
+		b.WriteString(styleDim.Render(fmt.Sprintf("\n  row %d–%d of %d", m.viewAllOffset+1, end, total)))
+	}
+
+	return styleBorder.Render(b.String())
 }
 
 // ── Screen 2: Group selection ─────────────────────────────────────────────────
