@@ -50,9 +50,11 @@ func ScanAptPackages() ([]AptPackage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "apt", "list", "--upgradable").CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("apt list: %w", err)
+	// Use Output() (stdout only) so stderr warnings don't mix in.
+	// Ignore the exit code — apt can return non-zero even when output is valid.
+	out, _ := exec.CommandContext(ctx, "apt", "list", "--upgradable").Output()
+	if len(out) == 0 {
+		return nil, nil
 	}
 
 	var names []string
@@ -179,16 +181,16 @@ func ScanApt() []Component {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "apt", "list", "--upgradable").CombinedOutput()
-	if err != nil {
-		return nil
-	}
+	// Use Output() (stdout only) so stderr warnings don't inflate the count.
+	out, _ := exec.CommandContext(ctx, "apt", "list", "--upgradable").Output()
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	// Subtract 1 for the "Listing..." header line.
-	n := len(lines) - 1
-	if n < 0 {
-		n = 0
+	// Count only lines that look like packages (contain "/" in field 0).
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) >= 2 && strings.Contains(parts[0], "/") {
+			n++
+		}
 	}
 
 	return []Component{{
