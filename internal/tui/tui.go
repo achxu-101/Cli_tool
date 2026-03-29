@@ -602,22 +602,18 @@ func (m Model) renderScanTable() string {
 	b.WriteString("\n")
 
 	for _, row := range m.groupSummary {
-		outdatedStr := fmt.Sprintf("%d", row.outdated)
-		var status string
+		// Pad plain strings first, then apply color so ANSI codes don't break alignment.
+		name := styleGroupName.Render(fmt.Sprintf("%-18s", row.name))
+		total := fmt.Sprintf("%-8d", row.total)
+		var outdatedStr, status string
 		if row.outdated > 0 {
-			outdatedStr = styleYellow.Render(outdatedStr)
-			status = styleYellow.Render("⚠ action")
+			outdatedStr = styleYellow.Render(fmt.Sprintf("%-12d", row.outdated))
+			status = styleYellow.Render("⚠  action needed")
 		} else {
-			status = styleGreen.Render("✓ up to date")
+			outdatedStr = fmt.Sprintf("%-12d", row.outdated)
+			status = styleGreen.Render("✓  up to date")
 		}
-		line := fmt.Sprintf("  %-18s %-8s %-12s %s",
-			styleGroupName.Render(row.name),
-			fmt.Sprintf("%d", row.total),
-			outdatedStr,
-			status,
-		)
-		b.WriteString(line)
-		b.WriteString("\n")
+		fmt.Fprintf(&b, "  %s %s %s %s\n", name, total, outdatedStr, status)
 	}
 
 	b.WriteString("\n")
