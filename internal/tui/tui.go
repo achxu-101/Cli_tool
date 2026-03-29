@@ -24,7 +24,8 @@ import (
 type screen int
 
 const (
-	screenScan screen = iota
+	screenSplash screen = iota
+	screenScan
 	screenGroupSelect
 	screenComponentSelect
 	screenAptPackages
@@ -32,6 +33,13 @@ const (
 	screenUpgrade
 	screenSummary
 )
+
+const splashASCII = `
+  _   _ _ __   __ _ _ __ __ _  __| | ___  _ __
+ | | | | '_ \ / _` + "`" + `| '__/ _` + "`" + `|/ _` + "`" + `|/ _ \| '__|
+ | |_| | |_) | (_| | | | (_| | (_| | (_) | |
+  \__,_| .__/ \__, |_|  \__,_|\__,_|\___/|_|
+        |_|   |___/                             `
 
 // scanDoneMsg carries the resolver results back to the bubbletea runtime.
 type scanDoneMsg struct {
@@ -161,7 +169,7 @@ func New(cfg *config.Config, dryRun, offline bool) Model {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	return Model{
 		cfg:            cfg,
-		screen:         screenScan,
+		screen:         screenSplash,
 		spinner:        sp,
 		dryRun:         dryRun,
 		offline:        offline,
@@ -238,6 +246,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.screen {
+	case screenSplash:
+		return m.updateSplash(msg)
 	case screenScan:
 		return m.updateScan(msg)
 	case screenGroupSelect:
@@ -442,6 +452,8 @@ func (m Model) applyOfflineVersion(items []resolver.Result) (tea.Model, tea.Cmd)
 // View renders the current screen.
 func (m Model) View() string {
 	switch m.screen {
+	case screenSplash:
+		return m.viewSplash()
 	case screenScan:
 		return m.viewScan()
 	case screenGroupSelect:
@@ -459,6 +471,70 @@ func (m Model) View() string {
 	default:
 		return "Screen not yet implemented.\n"
 	}
+}
+
+// ── Screen 0: Splash ──────────────────────────────────────────────────────────
+
+func (m Model) updateSplash(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if msg.String() == "q" || msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+	case scanProgressMsg:
+		m.scanStatus = string(msg)
+		return m, m.readScanProgress()
+
+	case scanProgressDoneMsg:
+		return m, nil
+
+	case scanDoneMsg:
+		m.scanErr = msg.err
+		m.results = msg.results
+		m.groupSummary = buildGroupSummary(m.results)
+		m.screen = screenScan
+		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) viewSplash() string {
+	var b strings.Builder
+
+	art := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("51")).
+		Bold(true).
+		Render(splashASCII)
+	b.WriteString(art)
+	b.WriteString("\n\n")
+
+	tagline := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("255")).
+		Bold(true).
+		Render("  Upgrade Your Linux Systems")
+	b.WriteString(tagline)
+	b.WriteString("\n")
+
+	author := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("243")).
+		Render("  by ACHUTH B")
+	b.WriteString(author)
+	b.WriteString("\n\n")
+
+	status := m.scanStatus
+	if status == "" {
+		status = "Initialising..."
+	}
+	b.WriteString("  " + m.spinner.View() + "  " + styleDim.Render(status))
+	b.WriteString("\n")
+
+	return b.String()
 }
 
 // ── Screen 1: Scan ────────────────────────────────────────────────────────────
