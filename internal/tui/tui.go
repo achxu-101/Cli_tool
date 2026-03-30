@@ -507,8 +507,15 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Go back to previous group, or to group select if on the first group.
 			if m.currentGroupIndex > 0 {
 				m.currentGroupIndex--
-				// Strip results for the group we're returning to and any later groups,
-				// so re-confirming that group doesn't accumulate duplicates.
+				returningGroup := m.selectedGroups[m.currentGroupIndex]
+				// Remember which names the user had confirmed for this group.
+				prevSelected := map[string]bool{}
+				for _, r := range m.confirmedResults {
+					if r.Component.Group == returningGroup {
+						prevSelected[r.Component.Name] = true
+					}
+				}
+				// Strip results for this group and any later groups.
 				keep := make(map[string]bool, m.currentGroupIndex)
 				for i := 0; i < m.currentGroupIndex; i++ {
 					keep[m.selectedGroups[i]] = true
@@ -520,7 +527,13 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				m.confirmedResults = filtered
-				m = m.initCompSelected()
+				// Restore the user's previous selections rather than defaulting to IsOutdated.
+				groupItems := m.currentGroupResults()
+				m.compSelected = make([]bool, len(groupItems))
+				m.compCursor = 0
+				for i, r := range groupItems {
+					m.compSelected[i] = prevSelected[r.Component.Name]
+				}
 				return m, nil
 			}
 			m.confirmedResults = nil
