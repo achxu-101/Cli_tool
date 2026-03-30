@@ -182,7 +182,12 @@ func resolve(c scanner.Component) Result {
 			return r
 		}
 		r.Latest = tag
-		r.IsOutdated = outdated(c.Current, tag)
+		// The helm install script only manages Helm 3; don't flag a newer major version as outdated.
+		curMajor := strings.SplitN(strings.TrimPrefix(c.Current, "v"), ".", 2)[0]
+		latMajor := strings.SplitN(strings.TrimPrefix(tag, "v"), ".", 2)[0]
+		if curMajor == latMajor {
+			r.IsOutdated = outdated(c.Current, tag)
+		}
 
 	case "apt":
 		r.Latest = "run dist-upgrade"
