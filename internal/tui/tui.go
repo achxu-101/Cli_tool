@@ -118,7 +118,7 @@ type Model struct {
 	viewAllOffset int
 
 	// helm kubeconfig form (shown in component select when Helm Charts is empty)
-	helmScanKubeconfigInput string
+	helmScanKubeconfigInput *string
 	helmScanForm            *huh.Form
 	helmScanLoading         bool
 
@@ -154,7 +154,7 @@ type Model struct {
 
 	// kubeconfig prompt (shown on confirm screen when helm upgrades are queued)
 	kubeconfigPath  string
-	kubeconfigInput string
+	kubeconfigInput *string
 	kubeconfigForm  *huh.Form
 
 	// upgrade execution (screen 5)
@@ -429,7 +429,7 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helmScanForm = f
 		}
 		if m.helmScanForm.State == huh.StateCompleted {
-			kube := strings.TrimSpace(m.helmScanKubeconfigInput)
+			kube := strings.TrimSpace(*m.helmScanKubeconfigInput)
 			_ = m.cfg.SetKubeconfigPath(kube)
 			m.helmScanForm = nil
 			m.helmScanLoading = true
@@ -483,12 +483,13 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "b", "esc":
 				return m.advanceGroup()
 			default:
-				m.helmScanKubeconfigInput = m.cfg.KubeconfigPath
+				s := m.cfg.KubeconfigPath
+				m.helmScanKubeconfigInput = &s
 				m.helmScanForm = huh.NewForm(huh.NewGroup(
 					huh.NewInput().
 						Title("Kubeconfig path (e.g. /home/user/.kube/config)").
 						Placeholder("/etc/rancher/k3s/k3s.yaml").
-						Value(&m.helmScanKubeconfigInput),
+						Value(m.helmScanKubeconfigInput),
 				))
 				return m, m.helmScanForm.Init()
 			}
@@ -1375,7 +1376,7 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.kubeconfigForm = f
 		}
 		if m.kubeconfigForm.State == huh.StateCompleted {
-			m.kubeconfigPath = strings.TrimSpace(m.kubeconfigInput)
+			m.kubeconfigPath = strings.TrimSpace(*m.kubeconfigInput)
 			_ = m.cfg.SetKubeconfigPath(m.kubeconfigPath)
 			m.kubeconfigForm = nil
 			// Return to confirm so user can review then press ENTER.
@@ -1395,13 +1396,14 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.kubeconfigPath == "" {
 				m.kubeconfigPath = upgrader.DetectKubeconfig()
 			}
-			m.kubeconfigInput = m.kubeconfigPath
+			s := m.kubeconfigPath
+			m.kubeconfigInput = &s
 			m.kubeconfigForm = huh.NewForm(huh.NewGroup(
 				huh.NewInput().
 					Title("Kubeconfig path for Helm operations").
 					Description("e.g. /etc/rancher/k3s/k3s.yaml   (esc to cancel)").
 					Placeholder("/etc/rancher/k3s/k3s.yaml").
-					Value(&m.kubeconfigInput),
+					Value(m.kubeconfigInput),
 			))
 			return m, m.kubeconfigForm.Init()
 		case "enter":
@@ -1502,12 +1504,13 @@ func (m Model) startUpgrades() (tea.Model, tea.Cmd) {
 			m.kubeconfigPath = detected
 		} else {
 			// Auto-detection failed — prompt the user.
-			m.kubeconfigInput = ""
+			empty := ""
+			m.kubeconfigInput = &empty
 			m.kubeconfigForm = huh.NewForm(huh.NewGroup(
 				huh.NewInput().
 					Title("Kubeconfig path not found automatically. Please enter it:").
 					Placeholder("/home/youruser/.kube/config").
-					Value(&m.kubeconfigInput),
+					Value(m.kubeconfigInput),
 			))
 			return m, m.kubeconfigForm.Init()
 		}
