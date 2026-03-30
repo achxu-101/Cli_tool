@@ -352,7 +352,7 @@ func upgradeHelmChart(c scanner.Component, version string, w io.Writer, dryRun b
 
 	step(w, fmt.Sprintf("Upgrading %s to %s in namespace %s...", c.Name, version, namespace))
 	return streamShell(fmt.Sprintf(
-		`%s helm upgrade %s %s/%s --namespace %s --version %s --reuse-values --wait --timeout 10m`,
+		`%s helm upgrade %s %s/%s --namespace %s --version %s --reset-then-reuse-values --wait --timeout 10m`,
 		env, c.Name, repoName, chart, namespace, version,
 	), w, dryRun)
 }
