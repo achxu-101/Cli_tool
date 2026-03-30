@@ -507,6 +507,19 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Go back to previous group, or to group select if on the first group.
 			if m.currentGroupIndex > 0 {
 				m.currentGroupIndex--
+				// Strip results for the group we're returning to and any later groups,
+				// so re-confirming that group doesn't accumulate duplicates.
+				keep := make(map[string]bool, m.currentGroupIndex)
+				for i := 0; i < m.currentGroupIndex; i++ {
+					keep[m.selectedGroups[i]] = true
+				}
+				filtered := m.confirmedResults[:0]
+				for _, r := range m.confirmedResults {
+					if keep[r.Component.Group] {
+						filtered = append(filtered, r)
+					}
+				}
+				m.confirmedResults = filtered
 				m = m.initCompSelected()
 				return m, nil
 			}
