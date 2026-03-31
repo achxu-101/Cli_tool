@@ -207,16 +207,23 @@ func resolve(c scanner.Component) Result {
 			// General apt-packages component — use the pre-counted number.
 			r.IsOutdated = n > 0
 		} else if c.AptPackage != "" {
-			// Specific service managed via apt — check if that package has an update.
+			// Specific service managed via apt — compare installed vs candidate.
+			// apt-cache policy is more reliable than apt list --upgradable because
+			// it doesn't require a fresh apt-get update to be accurate.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			out, _ := exec.CommandContext(ctx, "apt", "list", "--upgradable").Output()
+			out, _ := exec.CommandContext(ctx, "apt-cache", "policy", c.AptPackage).Output()
 			cancel()
-			pkg := strings.ToLower(c.AptPackage)
+			var installed, candidate string
 			for _, line := range strings.Split(string(out), "\n") {
-				if strings.HasPrefix(strings.ToLower(line), pkg+"/") {
-					r.IsOutdated = true
-					break
+				line = strings.TrimSpace(line)
+				if rest, ok := strings.CutPrefix(line, "Installed:"); ok {
+					installed = strings.TrimSpace(rest)
+				} else if rest, ok := strings.CutPrefix(line, "Candidate:"); ok {
+					candidate = strings.TrimSpace(rest)
 				}
+			}
+			if installed != "" && installed != "(none)" && candidate != "" && candidate != "(none)" {
+				r.IsOutdated = installed != candidate
 			}
 		}
 

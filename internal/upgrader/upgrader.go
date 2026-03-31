@@ -202,16 +202,26 @@ func upgradeGithubBinary(c scanner.Component, version string, w io.Writer, dryRu
 }
 
 func upgradeDocker(_ scanner.Component, version string, w io.Writer, dryRun bool) error {
-	step(w, fmt.Sprintf("Installing Docker %s via Rancher script...", version))
-	// Rancher scripts use the "docker-v{version}" filename (e.g. docker-v29.3.sh).
-	// Download to a temp file first so curl 404s are caught as errors instead of
-	// silently piping an empty script to sh.
+	step(w, fmt.Sprintf("Installing Docker %s...", version))
+	// Try the Rancher install script first; fall back to get.docker.com if the
+	// Rancher URL doesn't exist for this version (curl -sf exits non-zero on 4xx).
 	script := fmt.Sprintf("/tmp/install-docker-%s.sh", version)
-	url := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", version)
-	if err := streamShell(fmt.Sprintf(
-		`curl -sfL '%s' -o '%s' && sh '%s'; r=$?; rm -f '%s'; exit $r`,
-		url, script, script, script,
-	), w, dryRun); err != nil {
+	fallback := "/tmp/install-docker-fallback.sh"
+	rancherURL := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", version)
+	cmd := fmt.Sprintf(
+		`if curl -sfL '%s' -o '%s' 2>/dev/null; then `+
+			`echo "Using Rancher install script..."; `+
+			`sh '%s'; r=$?; rm -f '%s'; exit $r; `+
+			`fi; `+
+			`rm -f '%s'; `+
+			`echo "Rancher script not available for %s, falling back to get.docker.com..."; `+
+			`curl -sfL https://get.docker.com -o '%s' && sh '%s'; r=$?; rm -f '%s'; exit $r`,
+		rancherURL, script, script, script,
+		script,
+		version,
+		fallback, fallback, fallback,
+	)
+	if err := streamShell(cmd, w, dryRun); err != nil {
 		return err
 	}
 	step(w, "Restarting Docker...")
