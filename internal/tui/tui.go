@@ -964,8 +964,8 @@ func (m Model) transitionToGroupSelect() (tea.Model, tea.Cmd) {
 	var options []huh.Option[string]
 	var defaults []string
 	for _, row := range m.groupSummary {
-		// Helm Charts always appears so users can configure a kubeconfig if needed.
-		alwaysShow := row.name == "Helm Charts"
+		// Helm Charts with 0 total means helm isn't configured — always show so user can set kubeconfig.
+		alwaysShow := row.name == "Helm Charts" && row.total == 0
 		if row.outdated > 0 || m.offline || alwaysShow {
 			var label string
 			if row.name == "Helm Charts" && row.total == 0 {
