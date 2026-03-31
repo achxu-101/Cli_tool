@@ -156,15 +156,26 @@ func resolve(c scanner.Component) Result {
 			return r
 		}
 		if tag != "rate limited" {
-			// Strip "v", keep only major.minor (e.g. "27.3").
-			ver := strings.TrimPrefix(tag, "v")
+			// Strip "docker-v" or plain "v" prefix, keep only major.minor (e.g. "29.3").
+			ver := tag
+			for _, pfx := range []string{"docker-v", "v"} {
+				if strings.HasPrefix(ver, pfx) {
+					ver = strings.TrimPrefix(ver, pfx)
+					break
+				}
+			}
 			if parts := strings.SplitN(ver, ".", 3); len(parts) >= 2 {
 				ver = parts[0] + "." + parts[1]
 			}
 			tag = ver
 		}
 		r.Latest = tag
-		r.IsOutdated = outdated(c.Current, tag)
+		// Compare only major.minor of the installed version so "29.3.1" == "29.3".
+		curVer := strings.TrimPrefix(c.Current, "v")
+		if parts := strings.SplitN(curVer, ".", 3); len(parts) >= 2 {
+			curVer = parts[0] + "." + parts[1]
+		}
+		r.IsOutdated = outdated(curVer, tag)
 
 	case "k3s_script":
 		tag, err := githubLatest("k3s-io/k3s")
@@ -192,8 +203,22 @@ func resolve(c scanner.Component) Result {
 	case "apt":
 		r.Latest = "run dist-upgrade"
 		var n int
-		fmt.Sscanf(c.Current, "%d packages upgradable", &n)
-		r.IsOutdated = n > 0
+		if parsed, _ := fmt.Sscanf(c.Current, "%d packages upgradable", &n); parsed == 1 {
+			// General apt-packages component — use the pre-counted number.
+			r.IsOutdated = n > 0
+		} else if c.AptPackage != "" {
+			// Specific service managed via apt — check if that package has an update.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			out, _ := exec.CommandContext(ctx, "apt", "list", "--upgradable").Output()
+			cancel()
+			pkg := strings.ToLower(c.AptPackage)
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(strings.ToLower(line), pkg+"/") {
+					r.IsOutdated = true
+					break
+				}
+			}
+		}
 
 	case "custom_script":
 		r.Latest = "custom"
