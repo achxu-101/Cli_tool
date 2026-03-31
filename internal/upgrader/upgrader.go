@@ -209,7 +209,8 @@ func upgradeDocker(_ scanner.Component, version string, w io.Writer, dryRun bool
 	script := fmt.Sprintf("/tmp/install-docker-%s.sh", version)
 	url := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", version)
 	if err := streamShell(fmt.Sprintf(
-		"curl -sfL %q -o %s && sh %s; rm -f %s", url, script, script, script,
+		`curl -sfL '%s' -o '%s' && sh '%s'; r=$?; rm -f '%s'; exit $r`,
+		url, script, script, script,
 	), w, dryRun); err != nil {
 		return err
 	}
