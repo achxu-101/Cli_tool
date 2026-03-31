@@ -197,8 +197,13 @@ func upgradeGithubBinary(c scanner.Component, version string, w io.Writer, dryRu
 
 func upgradeDocker(_ scanner.Component, version string, w io.Writer, dryRun bool) error {
 	step(w, fmt.Sprintf("Installing Docker %s via Rancher script...", version))
+	// Rancher scripts use the "docker-v{version}" filename (e.g. docker-v29.3.sh).
+	// Download to a temp file first so curl 404s are caught as errors instead of
+	// silently piping an empty script to sh.
+	script := fmt.Sprintf("/tmp/install-docker-%s.sh", version)
+	url := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", version)
 	if err := streamShell(fmt.Sprintf(
-		"curl -sfL https://releases.rancher.com/install-docker/%s.sh | sh", version,
+		"curl -sfL %q -o %s && sh %s; rm -f %s", url, script, script, script,
 	), w, dryRun); err != nil {
 		return err
 	}
