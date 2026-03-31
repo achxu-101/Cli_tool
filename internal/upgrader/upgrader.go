@@ -131,7 +131,13 @@ func RunUpgrade(c scanner.Component, version string, w io.Writer, dryRun bool) e
 	case "helm_script":
 		return upgradeHelm(w, dryRun)
 	case "apt":
-		return upgradeApt(c.SelectedPackages, w, dryRun)
+		packages := c.SelectedPackages
+		// For a specific service managed via apt (e.g. containerd), upgrade only
+		// that package — not a full dist-upgrade of everything on the system.
+		if len(packages) == 0 && c.AptPackage != "" {
+			packages = []string{c.AptPackage}
+		}
+		return upgradeApt(packages, w, dryRun)
 	case "custom_script":
 		return upgradeCustomScript(c, w, dryRun)
 	default:

@@ -111,7 +111,7 @@ var knownServices = []KnownService{
 	{
 		Name:       "containerd",
 		Method:     MethodApt,
-		AptPackage: "containerd",
+		AptPackage: "containerd.io",
 	},
 }
 
