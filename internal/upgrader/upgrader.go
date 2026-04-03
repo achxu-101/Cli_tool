@@ -211,6 +211,10 @@ func upgradeDocker(_ scanner.Component, version string, w io.Writer, dryRun bool
 }
 
 func upgradeDockerRancher(version string, w io.Writer, dryRun bool) error {
+	// Strip any display-only suffix (e.g. " (Rancher pending)") from the version.
+	if idx := strings.Index(version, " "); idx >= 0 {
+		version = version[:idx]
+	}
 	step(w, fmt.Sprintf("Installing Docker %s via Rancher script...", version))
 	script := fmt.Sprintf("/tmp/install-docker-%s.sh", version)
 	url := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", version)
