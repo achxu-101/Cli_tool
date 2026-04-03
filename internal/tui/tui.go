@@ -597,7 +597,9 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case " ":
 			if m.compCursor < len(m.compSelected) {
-				m.compSelected[m.compCursor] = !m.compSelected[m.compCursor]
+				if cur := items[m.compCursor]; !strings.Contains(cur.Latest, "pending") {
+					m.compSelected[m.compCursor] = !m.compSelected[m.compCursor]
+				}
 			}
 		case "l":
 			if len(items) > 0 && items[m.compCursor].Component.Name == "apt packages" {
@@ -1223,9 +1225,12 @@ func (m Model) viewComponentSelect() string {
 			prefix = "> "
 		}
 
+		pending := strings.Contains(r.Latest, "pending")
 		selected := i < len(m.compSelected) && m.compSelected[i]
 		var check string
-		if r.Component.IsUnknown {
+		if pending {
+			check = styleDim.Render("[~]")
+		} else if r.Component.IsUnknown {
 			check = styleYellow.Render("[?]")
 		} else if selected {
 			check = styleGreen.Render("[✓]")
@@ -1249,6 +1254,8 @@ func (m Model) viewComponentSelect() string {
 			latest = styleDim.Render(fmt.Sprintf("%-10s", "(enter on confirm)"))
 		} else if r.Component.IsUnknown || r.Latest == "" {
 			latest = styleYellow.Render(fmt.Sprintf("%-10s", "???"))
+		} else if pending {
+			latest = styleDim.Render(fmt.Sprintf("%-10s", r.Latest))
 		} else {
 			latest = styleCyan.Render(fmt.Sprintf("%-10s", r.Latest))
 		}

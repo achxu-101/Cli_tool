@@ -211,7 +211,14 @@ func upgradeDocker(_ scanner.Component, version string, w io.Writer, dryRun bool
 }
 
 func upgradeDockerRancher(version string, w io.Writer, dryRun bool) error {
-	// Strip any display-only suffix (e.g. " (Rancher pending)") from the version.
+	// Reject upgrades where the Rancher script hasn't been published yet.
+	if strings.Contains(version, "pending") {
+		if idx := strings.Index(version, " "); idx >= 0 {
+			version = version[:idx]
+		}
+		return fmt.Errorf("Rancher has not yet published an install script for Docker %s — try again later", version)
+	}
+	// Strip any display-only suffix from the version.
 	if idx := strings.Index(version, " "); idx >= 0 {
 		version = version[:idx]
 	}
