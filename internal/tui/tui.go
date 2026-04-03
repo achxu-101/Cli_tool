@@ -597,7 +597,8 @@ func (m Model) updateComponentSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case " ":
 			if m.compCursor < len(m.compSelected) {
-				if cur := items[m.compCursor]; !strings.Contains(cur.Latest, "pending") {
+				cur := items[m.compCursor]
+				if cur.IsOutdated || cur.Component.IsUnknown {
 					m.compSelected[m.compCursor] = !m.compSelected[m.compCursor]
 				}
 			}
@@ -1226,10 +1227,13 @@ func (m Model) viewComponentSelect() string {
 		}
 
 		pending := strings.Contains(r.Latest, "pending")
+		upToDate := !r.IsOutdated && !r.Component.IsUnknown
 		selected := i < len(m.compSelected) && m.compSelected[i]
 		var check string
 		if pending {
 			check = styleDim.Render("[~]")
+		} else if upToDate {
+			check = styleDim.Render("[=]")
 		} else if r.Component.IsUnknown {
 			check = styleYellow.Render("[?]")
 		} else if selected {
@@ -1254,7 +1258,7 @@ func (m Model) viewComponentSelect() string {
 			latest = styleDim.Render(fmt.Sprintf("%-10s", "(enter on confirm)"))
 		} else if r.Component.IsUnknown || r.Latest == "" {
 			latest = styleYellow.Render(fmt.Sprintf("%-10s", "???"))
-		} else if pending {
+		} else if pending || upToDate {
 			latest = styleDim.Render(fmt.Sprintf("%-10s", r.Latest))
 		} else {
 			latest = styleCyan.Render(fmt.Sprintf("%-10s", r.Latest))
