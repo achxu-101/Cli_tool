@@ -161,6 +161,9 @@ type Model struct {
 	// Loaded from config on start and can be toggled on the confirm screen.
 	dockerMethod string
 
+	// settingsForm is shown on the scan screen when the user presses [c].
+	settingsForm *huh.Form
+
 	// upgrade execution (screen 5)
 	upgradeIdx     int
 	upgradeReader  *io.PipeReader
@@ -355,6 +358,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateScan(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Settings form overlay.
+	if m.settingsForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.settingsForm = nil
+				return m, nil
+			}
+		}
+		form, cmd := m.settingsForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.settingsForm = f
+		}
+		if m.settingsForm.State == huh.StateCompleted {
+			_ = m.cfg.SetDockerMethod(m.dockerMethod)
+			m.settingsForm = nil
+			// Re-scan so the resolver re-evaluates Docker with the new method.
+			m.results = nil
+			m.groupSummary = nil
+			m.scanStatus = ""
+			m.scanProgressCh = make(chan string, 8)
+			return m, tea.Batch(m.spinner.Tick, m.runScan(), m.readScanProgress())
+		}
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -371,6 +402,19 @@ func (m Model) updateScan(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.results != nil {
 				return m.transitionToGroupSelect()
 			}
+		case "c":
+			// Open settings form to configure Docker install method.
+			m.settingsForm = huh.NewForm(huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Docker install method").
+					Description("Rancher: version-specific scripts tested with K3s\nOfficial: get.docker.com (always latest)").
+					Options(
+						huh.NewOption("Rancher script (releases.rancher.com)", config.DockerMethodRancher),
+						huh.NewOption("Official (get.docker.com)", config.DockerMethodOfficial),
+					).
+					Value(&m.dockerMethod),
+			))
+			return m, m.settingsForm.Init()
 		}
 
 	case scanProgressMsg:
@@ -745,6 +789,10 @@ func (m Model) viewSplash() string {
 // ── Screen 1: Scan ────────────────────────────────────────────────────────────
 
 func (m Model) viewScan() string {
+	if m.settingsForm != nil {
+		return m.settingsForm.View()
+	}
+
 	if m.results == nil {
 		status := m.scanStatus
 		if status == "" {
@@ -804,7 +852,7 @@ func (m Model) renderScanTable() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styleDim.Render("  [v] View all findings   [u / ENTER] Upgrade   [q] Quit"))
+	b.WriteString(styleDim.Render("  [v] View all findings   [u / ENTER] Upgrade   [c] Configure   [q] Quit"))
 	return b.String()
 }
 
