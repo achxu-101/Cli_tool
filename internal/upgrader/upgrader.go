@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"upgrador/internal/config"
 	"upgrador/internal/scanner"
 )
 
@@ -202,26 +203,34 @@ func upgradeGithubBinary(c scanner.Component, version string, w io.Writer, dryRu
 }
 
 func upgradeDocker(_ scanner.Component, version string, w io.Writer, dryRun bool) error {
-	step(w, fmt.Sprintf("Installing Docker %s...", version))
-	// Try the Rancher install script first; fall back to get.docker.com if the
-	// Rancher URL doesn't exist for this version (curl -sf exits non-zero on 4xx).
+	cfg, _ := config.Load()
+	if cfg != nil && cfg.GetDockerMethod() == config.DockerMethodOfficial {
+		return upgradeDockerOfficial(w, dryRun)
+	}
+	return upgradeDockerRancher(version, w, dryRun)
+}
+
+func upgradeDockerRancher(version string, w io.Writer, dryRun bool) error {
+	step(w, fmt.Sprintf("Installing Docker %s via Rancher script...", version))
 	script := fmt.Sprintf("/tmp/install-docker-%s.sh", version)
-	fallback := "/tmp/install-docker-fallback.sh"
-	rancherURL := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", version)
-	cmd := fmt.Sprintf(
-		`if curl -sfL '%s' -o '%s' 2>/dev/null; then `+
-			`echo "Using Rancher install script..."; `+
-			`sh '%s'; r=$?; rm -f '%s'; exit $r; `+
-			`fi; `+
-			`rm -f '%s'; `+
-			`echo "Rancher script not available for %s, falling back to get.docker.com..."; `+
-			`curl -sfL https://get.docker.com -o '%s' && sh '%s'; r=$?; rm -f '%s'; exit $r`,
-		rancherURL, script, script, script,
-		script,
-		version,
-		fallback, fallback, fallback,
-	)
-	if err := streamShell(cmd, w, dryRun); err != nil {
+	url := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", version)
+	if err := streamShell(fmt.Sprintf(
+		`curl -sfL '%s' -o '%s' && sh '%s'; r=$?; rm -f '%s'; exit $r`,
+		url, script, script, script,
+	), w, dryRun); err != nil {
+		return err
+	}
+	step(w, "Restarting Docker...")
+	return streamShell("systemctl restart docker", w, dryRun)
+}
+
+func upgradeDockerOfficial(w io.Writer, dryRun bool) error {
+	step(w, "Installing latest Docker via get.docker.com...")
+	script := "/tmp/install-docker-official.sh"
+	if err := streamShell(fmt.Sprintf(
+		`curl -sfL https://get.docker.com -o '%s' && sh '%s'; r=$?; rm -f '%s'; exit $r`,
+		script, script, script,
+	), w, dryRun); err != nil {
 		return err
 	}
 	step(w, "Restarting Docker...")

@@ -22,11 +22,34 @@ type UserBinary struct {
 	AddedAt    string `json:"added_at"`
 }
 
+// DockerMethodRancher and DockerMethodOfficial are the two supported Docker
+// install methods. Rancher (the default) uses version-specific scripts from
+// releases.rancher.com; Official uses the generic get.docker.com script.
+const (
+	DockerMethodRancher  = "rancher"
+	DockerMethodOfficial = "official"
+)
+
 // Config is the contents of ~/.config/upgrador/known.json.
 type Config struct {
 	Version        string                `json:"version"`
 	Binaries       map[string]UserBinary `json:"binaries"`
 	KubeconfigPath string                `json:"kubeconfig_path,omitempty"`
+	DockerMethod   string                `json:"docker_method,omitempty"` // "rancher" (default) or "official"
+}
+
+// GetDockerMethod returns the configured Docker install method, defaulting to Rancher.
+func (c *Config) GetDockerMethod() string {
+	if c.DockerMethod == DockerMethodOfficial {
+		return DockerMethodOfficial
+	}
+	return DockerMethodRancher
+}
+
+// SetDockerMethod persists the Docker install method to the config file.
+func (c *Config) SetDockerMethod(method string) error {
+	c.DockerMethod = method
+	return c.Save()
 }
 
 func configPath() (string, error) {

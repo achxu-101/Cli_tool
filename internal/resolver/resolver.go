@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"upgrador/internal/config"
 	"upgrador/internal/scanner"
 )
 
@@ -175,7 +176,27 @@ func resolve(c scanner.Component) Result {
 		if parts := strings.SplitN(curVer, ".", 3); len(parts) >= 2 {
 			curVer = parts[0] + "." + parts[1]
 		}
-		r.IsOutdated = outdated(curVer, tag)
+		if !outdated(curVer, tag) {
+			break
+		}
+		// When using the Rancher installer (default), verify the script actually
+		// exists for this version before marking Docker as outdatable. Rancher lags
+		// behind moby/moby releases, so the latest GitHub tag may not have a
+		// corresponding script yet.
+		cfg, _ := config.Load()
+		if cfg == nil || cfg.GetDockerMethod() == config.DockerMethodRancher {
+			rancherURL := fmt.Sprintf("https://releases.rancher.com/install-docker/docker-v%s.sh", tag)
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodHead, rancherURL, nil)
+			if req != nil {
+				resp, err := httpClient.Do(req)
+				if err != nil || resp.StatusCode != http.StatusOK {
+					// Rancher hasn't published the script for this version yet.
+					r.Latest = tag + " (Rancher pending)"
+					break
+				}
+			}
+		}
+		r.IsOutdated = true
 
 	case "k3s_script":
 		tag, err := githubLatest("k3s-io/k3s")

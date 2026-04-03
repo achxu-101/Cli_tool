@@ -157,6 +157,10 @@ type Model struct {
 	kubeconfigInput *string
 	kubeconfigForm  *huh.Form
 
+	// dockerMethod is the current Docker install method ("rancher" or "official").
+	// Loaded from config on start and can be toggled on the confirm screen.
+	dockerMethod string
+
 	// upgrade execution (screen 5)
 	upgradeIdx     int
 	upgradeReader  *io.PipeReader
@@ -198,6 +202,7 @@ func New(cfg *config.Config, dryRun, offline bool) Model {
 		offline:        offline,
 		editingIdx:     -1,
 		scanProgressCh: make(chan string, 8),
+		dockerMethod:   cfg.GetDockerMethod(),
 	}
 }
 
@@ -1432,6 +1437,15 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Value(m.kubeconfigInput),
 			))
 			return m, m.kubeconfigForm.Init()
+		case "d":
+			// Toggle Docker install method and persist.
+			if m.dockerMethod == config.DockerMethodOfficial {
+				m.dockerMethod = config.DockerMethodRancher
+			} else {
+				m.dockerMethod = config.DockerMethodOfficial
+			}
+			_ = m.cfg.SetDockerMethod(m.dockerMethod)
+			return m, nil
 		case "enter":
 			return m.startUpgrades()
 		}
@@ -1485,10 +1499,15 @@ func (m Model) viewConfirm() string {
 
 	// Show kubeconfig info when Helm charts are queued.
 	hasHelm := false
+	hasDocker := false
 	for _, r := range m.confirmedResults {
-		if r.Component.Group == "Helm Charts" {
+		switch r.Component.Group {
+		case "Helm Charts":
 			hasHelm = true
-			break
+		case "Services":
+			if r.Component.Name == "docker" {
+				hasDocker = true
+			}
 		}
 	}
 	if hasHelm {
@@ -1503,10 +1522,26 @@ func (m Model) viewConfirm() string {
 			styleCyan.Render(kubePath),
 			styleDim.Render("[k] change")))
 	}
+	if hasDocker {
+		method := m.dockerMethod
+		if method == "" {
+			method = config.DockerMethodRancher
+		}
+		methodLabel := styleCyan.Render("Rancher script")
+		if method == config.DockerMethodOfficial {
+			methodLabel = styleCyan.Render("get.docker.com")
+		}
+		b.WriteString(fmt.Sprintf("Docker installer: %s   %s\n\n",
+			methodLabel,
+			styleDim.Render("[d] toggle")))
+	}
 
 	hint := "[ENTER] Run upgrades"
 	if hasHelm {
 		hint += "   [k] Kubeconfig"
+	}
+	if hasDocker {
+		hint += "   [d] Docker method"
 	}
 	hint += "   [b] Go back   [q] Cancel"
 	b.WriteString(styleDim.Render(hint))
